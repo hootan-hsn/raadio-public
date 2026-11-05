@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python (syntax, undefined names, unused imports)
+        run: |
+          pip install --quiet ruff
+          python -m py_compile controller/*.py
+          ruff check --select E9,F controller/
+
+      - name: Web player (JavaScript syntax, manifest)
+        run: |
+          node --check web/script.js
+          node --check web/sw.js
+          python -m json.tool web/manifest.json > /dev/null
+
+      - name: Shell scripts
+        run: shellcheck deploy/deploy.sh deploy/raadio.sh deploy/nginx/install.sh deploy/icecast/entrypoint.sh infra/discover.sh relay/setup.sh deploy/add-studio-host.sh
+
+      - name: Nginx config (both sites + shared web snippet, as on the server)
+        run: |
+          command -v nginx >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q nginx; }
+          # stand-in certificate files, so the HTTPS site can be checked
+          L=/etc/letsencrypt
+          for d in raadio.run.place raadio.xyz; do
+            C=$L/live/$d
+            sudo mkdir -p "$C"
+            sudo openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj "/CN=$d" \
+              -keyout "$C/privkey.pem" -out "$C/fullchain.pem" 2>/dev/null
+          done
+          sudo openssl dhparam -dsaparam -out $L/ssl-dhparams.pem 2048 2>/dev/null
+          echo "ssl_protocols TLSv1.2 TLSv1.3;" | sudo tee $L/options-ssl-nginx.conf >/dev/null
+          sudo rm -f /etc/nginx/sites-enabled/*
+          sudo RAADIO_SKIP_LIVE_CHECK=1 bash deploy/nginx/install.sh --apply
+          ls -l /etc/nginx/sites-enabled/
+          sudo nginx -t
+          # both domains are served (raadio.xyz once went missing from an --apply)
+          for d in raadio.xyz raadio.run.place; do sudo nginx -T 2>/dev/null | grep -q "server_name[^;]*\b$d\b" || { echo "$d is not served"; exit 1; }; done
+
+      - name: Docker images build
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          docker compose build
+
+  infra:
+    name: Terraform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+      - name: Format and validate (no AWS access needed)
+        run: |
+          terraform -chdir=infra fmt -check -recursive
+          terraform -chdir=infra init -backend=false -input=false
+          terraform -chdir=infra validate

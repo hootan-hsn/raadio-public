@@ -1,0 +1,20 @@
+# Exact versions. To refresh after an upgrade on the server:
+#   .venv/bin/pip freeze > controller/requirements.txt
+annotated-doc==0.0.5
+annotated-types==0.7.0
+anyio==4.12.1
+click==8.1.8
+fastapi==0.128.8
+h11==0.16.0
+idna==3.20
+maxminddb==2.6.2
+pyaes==1.6.1
+pydantic==2.13.5
+pydantic_core==2.46.5
+Pyrogram==2.0.106
+PySocks==1.7.1
+starlette==0.49.3
+TgCrypto==1.2.5
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+uvicorn==0.39.0

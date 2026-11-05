@@ -1,0 +1,43 @@
+# ---- Secrets: never commit ----
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+icecast.xml
+*.pem
+*.key
+
+# ---- Runtime data (session, database, downloads, uploads) ----
+data/*
+!data/.gitkeep
+*.db
+*.db-journal
+*.sqlite
+
+# ---- Python ----
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ---- Editors / OS ----
+.idea/
+.vscode/
+.DS_Store
+
+# ---- Logs / backups ----
+*.log
+*.bak
+*.save
+*.old.py
+
+# ---- Terraform (state lives in S3; these are per-machine or generated) ----
+infra/.terraform/
+infra/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+infra/terraform.tfvars
+infra/imports.tf
+infra/backend.hcl

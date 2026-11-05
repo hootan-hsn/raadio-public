@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ebe7e0" id="theme-color">
+  <meta name="description" content="Raadio is a free live radio station where the listeners choose the music: vote to skip, save the song you love, and leave a note for a flamingo to skywrite. Persian and world music, playing now.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Raadio">
+  <title>Raadio — free live radio, voted by its listeners | رادیو</title>
+  <link rel="canonical" href="https://raadio.xyz/">
+  <!-- the same player in Persian (?lang=fa), and the listener's guide as pages of its own -->
+  <link rel="alternate" hreflang="en" href="https://raadio.xyz/">
+  <link rel="alternate" hreflang="fa" href="https://raadio.xyz/?lang=fa">
+  <link rel="alternate" hreflang="x-default" href="https://raadio.xyz/">
+  <link rel="help" href="https://raadio.xyz/guide/" hreflang="en">
+  <link rel="help" href="https://raadio.xyz/fa/guide/" hreflang="fa">
+  <meta name="robots" content="index, follow, max-image-preview:large">
+  <meta name="keywords" content="Raadio, live radio, online radio, Persian music, Iranian radio, رادیو, رادیو آنلاین, موسیقی ایرانی, listener-voted radio">
+
+  <!-- How a shared link looks (WhatsApp, Telegram, X, Facebook, iMessage...) -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Raadio">
+  <meta property="og:title" content="Raadio — free live radio, voted by its listeners">
+  <meta property="og:description" content="One live station, everyone hearing the same song at the same moment. Vote to skip, save what you love, catch a flamingo.">
+  <meta property="og:url" content="https://raadio.xyz/">
+  <meta property="og:image" content="https://raadio.xyz/icons/og-image.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The Raadio player: a brass name plate, a glass display and three round keys">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:locale:alternate" content="fa_IR">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Raadio — free live radio, voted by its listeners">
+  <meta name="twitter:description" content="One live station, everyone hearing the same song at the same moment. Vote to skip, save what you love, catch a flamingo.">
+  <meta name="twitter:image" content="https://raadio.xyz/icons/og-image.jpg">
+
+  <!-- What search engines read about the station -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://raadio.xyz/#site",
+        "name": "Raadio",
+        "alternateName": ["رادیو", "Raadio Live"],
+        "url": "https://raadio.xyz/",
+        "inLanguage": ["en", "fa"],
+        "hasPart": [
+          { "@type": "WebPage", "name": "How to listen to Persian radio online — the Raadio guide", "url": "https://raadio.xyz/guide/", "inLanguage": "en" },
+          { "@type": "WebPage", "name": "راهنمای گوش دادن به رادیو آنلاین فارسی", "url": "https://raadio.xyz/fa/guide/", "inLanguage": "fa" }
+        ]
+      },
+      {
+        "@type": "RadioStation",
+        "@id": "https://raadio.xyz/#station",
+        "name": "Raadio",
+        "alternateName": "رادیو",
+        "url": "https://raadio.xyz/",
+        "logo": "https://raadio.xyz/icons/flamingo-512.png",
+        "image": "https://raadio.xyz/icons/og-image.jpg",
+        "description": "A free live internet radio station where the listeners choose the music by voting.",
+        "founder": { "@type": "Person", "name": "Hootan", "url": "https://hootan-hsn.framer.website/" },
+        
+        "potentialAction": {
+          "@type": "ListenAction",
+          "target": { "@type": "EntryPoint", "urlTemplate": "https://raadio.xyz/", "actionPlatform": ["https://schema.org/DesktopWebPlatform", "https://schema.org/MobileWebPlatform"] },
+          "expectsAcceptanceOf": { "@type": "Offer", "price": "0", "priceCurrency": "USD", "category": "free" }
+        }
+      }
+    ]
+  }
+  </script>
+
+  <link rel="icon" type="image/svg+xml" href="icons/flamingo.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/flamingo-192.png">
+  <link rel="apple-touch-icon" href="icons/flamingo-192.png">
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Fonts from the site itself (fonts/fonts.css): text shows in system serif/mono until
+       they arrive (font-display: swap). The Persian faces, Estedad (simple, low contrast,
+       like Mulish) with Vazirmatn behind it, only download when there's Persian on the page -->
+  <link rel="stylesheet" href="fonts/fonts.css?v=__BUILD__">
+
+  <!-- ?v= is replaced with the Git commit on each deploy, so phones never mix a new page
+       with an old cached stylesheet (deploy/deploy.sh) -->
+  <link rel="stylesheet" href="styles.css?v=__BUILD__">
+</head>
+<body>
+  <noscript>
+    <div style="max-width:40em;margin:2em auto;padding:0 1em;font:16px/1.6 system-ui,sans-serif;color:#26241f">
+      <h2>Raadio — free live radio, voted by its listeners</h2>
+      <p>Raadio is one live station: everyone hears the same song at the same moment, and the listeners decide what stays on air. Vote to skip a song, save the one you love, and catch a flamingo to leave a note it skywrites for everyone.</p>
+      <p dir="rtl" lang="fa">رادیو یک ایستگاه زنده است: همه هم‌زمان یک آهنگ را می‌شنوند و شنونده‌ها تصمیم می‌گیرند چه چیزی پخش بماند.</p>
+      <p>Raadio needs JavaScript to play. Please turn it on and reload the page.</p>
+    </div>
+  </noscript>
+  <!-- Icon sprite: every icon in the app comes from here so they share one size and stroke style -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.14v13.72a1 1 0 0 0 1.52.85l10.6-6.86a1 1 0 0 0 0-1.7L9.52 4.29A1 1 0 0 0 8 5.14z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="4" height="14" rx="1.2"/><rect x="13.5" y="5" width="4" height="14" rx="1.2"/></symbol>
+    <symbol id="i-dislike" viewBox="0 0 24 24"><path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"/></symbol>
+    <symbol id="i-guide" viewBox="0 0 24 24"><path d="M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-1zm0 13.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5V8c1.35-.85 3.8-1.5 5.5-1.5 1.2 0 2.4.15 3.5.5v11.5z"/><path d="M17.5 10.5c.88 0 1.73.09 2.5.26V9.24c-.79-.15-1.64-.24-2.5-.24-1.7 0-3.24.29-4.5.83v1.66c1.13-.64 2.7-.99 4.5-.99zM13 12.49v1.66c1.13-.64 2.7-.99 4.5-.99.88 0 1.73.09 2.5.26V11.9c-.79-.15-1.64-.24-2.5-.24-1.7 0-3.24.3-4.5.83zM17.5 14.33c-1.7 0-3.24.29-4.5.83v1.66c1.13-.64 2.7-.99 4.5-.99.88 0 1.73.09 2.5.26v-1.52c-.79-.16-1.64-.24-2.5-.24z"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z"/></symbol>
+    <symbol id="i-login" viewBox="0 0 24 24"><path d="M11 7 9.6 8.4l2.6 2.6H2v2h10.2l-2.6 2.6L11 17l5-5-5-5zm9 12h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-8v2h8v14z"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></symbol>
+    <symbol id="i-radio" viewBox="0 0 24 24"><path d="M3.24 6.15C2.51 6.43 2 7.17 2 8v12c0 1.1.89 2 2 2h16c1.11 0 2-.9 2-2V8c0-1.11-.89-2-2-2H8.3l8.26-3.34L15.88 1 3.24 6.15zM7 20c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm13-8h-2v-2h-2v2H4V8h16v4z"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M12 3 2 11.5l1.3 1.5L5 11.56V20a1 1 0 0 0 1 1h5v-6h2v6h5a1 1 0 0 0 1-1v-8.44L20.7 13l1.3-1.5L12 3zm5 16h-2v-6H9v6H7v-9.13l5-4.25 5 4.25V19z"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></symbol>
+    <symbol id="i-live" viewBox="0 0 24 24"><path d="M12 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-4.95-2.95 1.41 1.41a5 5 0 0 0 0 7.08l-1.41 1.41a7 7 0 0 1 0-9.9zm9.9 0a7 7 0 0 1 0 9.9l-1.41-1.41a5 5 0 0 0 0-7.08zM4.22 4.22l1.41 1.41a9 9 0 0 0 0 12.74l-1.41 1.41a11 11 0 0 1 0-15.56zm15.56 0a11 11 0 0 1 0 15.56l-1.41-1.41a9 9 0 0 0 0-12.74z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v10h2v1.8L8.3 16H20V6H4zm3 3h10v2H7V9zm0 3h7v2H7v-2z"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></symbol>
+    <symbol id="i-like" viewBox="0 0 24 24"><path d="M9 21h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.58 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2zM1 9h4v12H1V9z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="m17 7-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5-5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></symbol>
+  </svg>
+  <!-- Metal for the bottom icons: banded caramel gold, a dense scratch pattern, and one
+       "lit" mask per icon whose bright band follows the card's shared light (styles.css) -->
+  <svg class="metal-defs" width="0" height="0" aria-hidden="true" focusable="false">
+    <defs>
+      <linearGradient id="k-metal" x1="0" y1="0" x2="0" y2="1">
+        <stop class="k-s1" offset="0"/>
+        <stop class="k-s2" offset="0.32"/>
+        <stop class="k-s3" offset="0.55"/>
+        <stop class="k-s4" offset="0.8"/>
+        <stop class="k-s5" offset="1"/>
+      </linearGradient>
+      <!-- grime for the icons that have no key under them (login, guide): soft brown blotches -->
+      <filter id="k-grime-f" x="0" y="0" width="100%" height="100%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.22" numOctaves="2" seed="5"/>
+        <feColorMatrix values="0 0 0 0 0.22  0 0 0 0 0.15  0 0 0 0 0.07  0 0 0 2.4 -1.05"/>
+      </filter>
+      <pattern id="k-grime" patternUnits="userSpaceOnUse" width="24" height="24">
+        <rect width="24" height="24" filter="url(#k-grime-f)"/>
+      </pattern>
+      <pattern id="k-scratch" patternUnits="userSpaceOnUse" width="24" height="24">
+        <g fill="none" stroke-width="0.32" stroke-linecap="round"><path d="M8.12 11.13L17.00 8.85" stroke="#5a3d1a" stroke-opacity="0.28" transform="translate(0.12 0.15)"/><path d="M8.12 11.13L17.00 8.85" stroke="#fff" stroke-opacity="0.79"/><path d="M16.88 10.85L24.76 12.30" stroke="#5a3d1a" stroke-opacity="0.29" transform="translate(0.12 0.15)"/><path d="M16.88 10.85L24.76 12.30" stroke="#fff" stroke-opacity="0.84"/><path d="M1.52 16.52L-2.29 21.69" stroke="#5a3d1a" stroke-opacity="0.30" transform="translate(0.12 0.15)"/><path d="M1.52 16.52L-2.29 21.69" stroke="#fff" stroke-opacity="0.87"/><path d="M21.35 18.54L32.35 11.64" stroke="#5a3d1a" stroke-opacity="0.32" transform="translate(0.12 0.15)"/><path d="M21.35 18.54L32.35 11.64" stroke="#fff" stroke-opacity="0.91"/><path d="M21.10 1.31L29.43 -0.73" stroke="#5a3d1a" stroke-opacity="0.25" transform="translate(0.12 0.15)"/><path d="M21.10 1.31L29.43 -0.73" stroke="#fff" stroke-opacity="0.70"/><path d="M23.14 0.09L25.17 0.48" stroke="#5a3d1a" stroke-opacity="0.30" transform="translate(0.12 0.15)"/><path d="M23.14 0.09L25.17 0.48" stroke="#fff" stroke-opacity="0.86"/><path d="M3.20 22.02L7.40 20.28" stroke="#5a3d1a" stroke-opacity="0.26" transform="translate(0.12 0.15)"/><path d="M3.20 22.02L7.40 20.28" stroke="#fff" stroke-opacity="0.75"/><path d="M4.61 18.36L11.95 11.33" stroke="#5a3d1a" stroke-opacity="0.29" transform="translate(0.12 0.15)"/><path d="M4.61 18.36L11.95 11.33" stroke="#fff" stroke-opacity="0.83"/><path d="M16.40 20.45L12.98 25.75" stroke="#5a3d1a" stroke-opacity="0.30" transform="translate(0.12 0.15)"/><path d="M16.40 20.45L12.98 25.75" stroke="#fff" stroke-opacity="0.85"/><path d="M22.82 5.68L29.08 -4.12" stroke="#5a3d1a" stroke-opacity="0.28" transform="translate(0.12 0.15)"/><path d="M22.82 5.68L29.08 -4.12" stroke="#fff" stroke-opacity="0.79"/><path d="M20.74 14.02L25.89 15.58" stroke="#5a3d1a" stroke-opacity="0.26" transform="translate(0.12 0.15)"/><path d="M20.74 14.02L25.89 15.58" stroke="#fff" stroke-opacity="0.73"/><path d="M7.89 10.41L1.51 16.21" stroke="#5a3d1a" stroke-opacity="0.22" transform="translate(0.12 0.15)"/><path d="M7.89 10.41L1.51 16.21" stroke="#fff" stroke-opacity="0.64"/><path d="M2.47 18.82L8.82 25.20" stroke="#5a3d1a" stroke-opacity="0.20" transform="translate(0.12 0.15)"/><path d="M2.47 18.82L8.82 25.20" stroke="#fff" stroke-opacity="0.56"/><path d="M13.58 1.59L17.97 1.05" stroke="#5a3d1a" stroke-opacity="0.28" transform="translate(0.12 0.15)"/><path d="M13.58 1.59L17.97 1.05" stroke="#fff" stroke-opacity="0.81"/><path d="M8.86 16.02L4.75 17.19" stroke="#5a3d1a" stroke-opacity="0.22" transform="translate(0.12 0.15)"/><path d="M8.86 16.02L4.75 17.19" stroke="#fff" stroke-opacity="0.62"/><path d="M6.31 3.94L18.13 8.28" stroke="#5a3d1a" stroke-opacity="0.21" transform="translate(0.12 0.15)"/><path d="M6.31 3.94L18.13 8.28" stroke="#fff" stroke-opacity="0.60"/><path d="M7.06 0.36L8.34 -1.37" stroke="#5a3d1a" stroke-opacity="0.30" transform="translate(0.12 0.15)"/><path d="M7.06 0.36L8.34 -1.37" stroke="#fff" stroke-opacity="0.87"/><path d="M17.94 7.10L21.24 6.12" stroke="#5a3d1a" stroke-opacity="0.21" transform="translate(0.12 0.15)"/><path d="M17.94 7.10L21.24 6.12" stroke="#fff" stroke-opacity="0.60"/><path d="M15.92 6.58L18.34 6.75" stroke="#5a3d1a" stroke-opacity="0.28" transform="translate(0.12 0.15)"/><path d="M15.92 6.58L18.34 6.75" stroke="#fff" stroke-opacity="0.79"/><path d="M4.16 15.11L14.47 13.25" stroke="#5a3d1a" stroke-opacity="0.20" transform="translate(0.12 0.15)"/><path d="M4.16 15.11L14.47 13.25" stroke="#fff" stroke-opacity="0.58"/><path d="M10.96 13.42L18.07 3.73" stroke="#5a3d1a" stroke-opacity="0.25" transform="translate(0.12 0.15)"/><path d="M10.96 13.42L18.07 3.73" stroke="#fff" stroke-opacity="0.71"/><path d="M13.94 14.05L17.39 14.14" stroke="#5a3d1a" stroke-opacity="0.25" transform="translate(0.12 0.15)"/><path d="M13.94 14.05L17.39 14.14" stroke="#fff" stroke-opacity="0.72"/></g>
+      </pattern>
+      <linearGradient id="k-band" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#000"/>
+        <stop offset="0.35" stop-color="#000"/>
+        <stop offset="0.5" stop-color="#fff"/>
+        <stop offset="0.65" stop-color="#000"/>
+        <stop offset="1" stop-color="#000"/>
+      </linearGradient>
+      <mask id="k-lit-1" maskUnits="userSpaceOnUse" x="-500" y="-500" width="1000" height="1000">
+        <g transform="rotate(25 12 12)"><rect class="k-shine k-shine-1" x="-12" y="-30" width="12" height="84" fill="url(#k-band)"/></g>
+      </mask>
+      <mask id="k-lit-2" maskUnits="userSpaceOnUse" x="-500" y="-500" width="1000" height="1000">
+        <g transform="rotate(25 12 12)"><rect class="k-shine k-shine-2" x="-12" y="-30" width="12" height="84" fill="url(#k-band)"/></g>
+      </mask>
+      <mask id="k-lit-3" maskUnits="userSpaceOnUse" x="-500" y="-500" width="1000" height="1000">
+        <g transform="rotate(25 12 12)"><rect class="k-shine k-shine-3" x="-12" y="-30" width="12" height="84" fill="url(#k-band)"/></g>
+      </mask>
+    </defs>
+  </svg>
+
+
+  <canvas id="ambient" aria-hidden="true"></canvas>
+  <!-- flamingos behind the radio (circling round it, peeking over its top edge) -->
+  <div class="fl-layer fl-layer--back" id="fl-back" aria-hidden="true"></div>
+
+  <main class="stage">
+    <div class="float-wrap">
+      <div class="flip" id="flip">
+
+        <!-- ============ FRONT: radio ============ -->
+        <article class="face face--front deck" id="player" aria-label="Radio player">
+          <header class="brand">
+            <div class="nameplate" aria-hidden="true">
+              <svg class="np" viewBox="0 0 300 80" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision">
+                <!-- Aged brass nameplate in the app's caramel: the flamingo, "EST. FREQUENCY" and
+                     "RAADIO" engraved into it. Engraving = cut lines in dark brass with a pale lower
+                     lip where the light catches the edge of the cut. Soft corners like the keys. -->
+                <defs>
+                  <linearGradient id="np-bronze" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stop-color="#dcb67a"/>
+                    <stop offset="0.3" stop-color="#c79a5e"/>
+                    <stop offset="0.55" stop-color="#e3c48f"/>
+                    <stop offset="0.8" stop-color="#b98a50"/>
+                    <stop offset="1" stop-color="#a77a43"/>
+                  </linearGradient>
+                  <clipPath id="np-shape"><rect x="2" y="2" width="296" height="76" rx="20"/></clipPath>
+                  <!-- verdigris: green-blue patina, mostly round the edges and in the screws' corners -->
+                  <filter id="np-verd" x="0" y="0" width="100%" height="100%">
+                    <feTurbulence type="fractalNoise" baseFrequency="0.045 0.07" numOctaves="4" seed="11"/>
+                    <feColorMatrix values="0 0 0 0 0.45  0 0 0 0 0.5  0 0 0 0 0.42  0 0 0 3 -1.9"/>
+                  </filter>
+                  <!-- rust: small orange-brown pits and freckles -->
+                  <filter id="np-rust" x="0" y="0" width="100%" height="100%">
+                    <feTurbulence type="fractalNoise" baseFrequency="0.55" numOctaves="2" seed="4"/>
+                    <feColorMatrix values="0 0 0 0 0.42  0 0 0 0 0.27  0 0 0 0 0.12  0 0 0 -4 2.05"/>
+                  </filter>
+                  <filter id="np-grain" x="0" y="0" width="100%" height="100%">
+                    <feTurbulence type="fractalNoise" baseFrequency="0.9 0.04" numOctaves="2" seed="2"/>
+                    <feColorMatrix values="0 0 0 0 1  0 0 0 0 0.9  0 0 0 0 0.75  0 0 0 0.7 -0.32"/>
+                  </filter>
+                  <radialGradient id="np-edge" cx="0.5" cy="0.5" r="0.75">
+                    <stop offset="0.55" stop-color="#fff"/>
+                    <stop offset="1" stop-color="#000"/>
+                  </radialGradient>
+                  <mask id="np-edges" maskUnits="userSpaceOnUse" x="0" y="0" width="300" height="80">
+                    <rect width="300" height="80" fill="#fff"/>
+                    <rect width="300" height="80" fill="url(#np-edge)" opacity="0.75"/>
+                  </mask>
+                  <!-- What is cut into the plate (white = cut) -->
+                  <mask id="np-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="300" height="80">
+                    <g transform="translate(13 9) scale(0.52)" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+                      <ellipse cx="64" cy="84" rx="46" ry="24" stroke-width="3.4"/>
+                      <ellipse cx="64" cy="79" rx="40" ry="16" stroke-width="2.2"/>
+                      <ellipse cx="70" cy="77" rx="17" ry="6.5" stroke-width="2.6"/>
+                      <path d="M19.5 87C34 107 92 110 108.5 86" stroke-width="2.2" stroke-dasharray="4 3.4"/>
+                      <g>
+                        <path d="M37 84C29 70 29 60 39 51C49 42 52 31 44 22" stroke-width="18"/>
+                        <circle cx="38" cy="20" r="12.8" fill="#fff" stroke="none"/>
+                        <path d="M37 84C29 70 29 60 39 51C49 42 52 31 44 22" stroke="#000" stroke-width="13.2"/>
+                        <circle cx="38" cy="20" r="10" fill="#000" stroke="none"/>
+                      </g>
+                      <path d="M29.5 15.5C24 15 18.5 18.5 16.5 24.5L15 33C14.6 35.4 17.2 36.6 18.6 34.6L22.5 28.5C24.5 26 27.5 25.4 30.5 26Z" stroke-width="2.4"/>
+                      <path d="M16.2 26.5L22.5 28.5" stroke-width="2"/>
+                      <circle cx="41" cy="17.6" r="3.4" stroke-width="2.4"/>
+                    </g>
+                    <path d="M84 16V64" stroke="#fff" stroke-width="1.4"/>
+                    <text x="96" y="29" fill="#fff" font-family="Mulish, system-ui, sans-serif" font-size="9.6" font-weight="800" letter-spacing="2.9">EST. FREQUENCY</text>
+                    <text x="94" y="63" fill="#fff" font-family="Mulish, 'Helvetica Neue', Arial, sans-serif" font-size="33" font-weight="800" letter-spacing="3.6">RAADIO</text>
+                  </mask>
+                  <linearGradient id="np-band" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+                    <stop offset="0.45" stop-color="#fff" stop-opacity="0.42"/>
+                    <stop offset="0.58" stop-color="#fff" stop-opacity="0.12"/>
+                    <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+                  </linearGradient>
+                  <!-- where the light is: the scratches show fully only inside this band -->
+                  <linearGradient id="np-bandmask" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0" stop-color="#000"/>
+                    <stop offset="0.3" stop-color="#000"/>
+                    <stop offset="0.48" stop-color="#fff"/>
+                    <stop offset="0.66" stop-color="#000"/>
+                    <stop offset="1" stop-color="#000"/>
+                  </linearGradient>
+                  <mask id="np-lit" maskUnits="userSpaceOnUse" x="-200" y="-100" width="700" height="280">
+                    <g transform="rotate(25 150 40)"><rect class="np-shine" x="-90" y="-80" width="90" height="240" fill="url(#np-bandmask)"/></g>
+                  </mask>
+                </defs>
+
+                <g clip-path="url(#np-shape)">
+                  <rect width="300" height="80" fill="url(#np-bronze)"/>
+                  <rect width="300" height="80" filter="url(#np-grain)" opacity="0.35"/>
+                  <!-- patina and rust, heavier toward the edges -->
+                  <g mask="url(#np-edges)">
+                    <rect width="300" height="80" filter="url(#np-verd)" opacity="0.22"/>
+                  </g>
+                  <rect width="300" height="80" filter="url(#np-rust)" opacity="0.28"/>
+                  <!-- the engraving: pale lower lip first, then the dark cut -->
+                  <rect width="300" height="80" fill="#fbecc9" opacity="0.6" mask="url(#np-cut)" transform="translate(0 0.9)"/>
+                  <rect width="300" height="80" fill="#4a3216" opacity="0.85" mask="url(#np-cut)"/>
+                  <!-- scratches: barely there at rest, flashing where the light passes (like the glass) -->
+                  <g fill="none" stroke-linecap="round">
+                    <g stroke="#4a3216" stroke-opacity="0.22" stroke-width="0.5" transform="translate(0.35 0.45)"><path d="M99.1 17.7Q110.6 25.3 121.6 34.6"/><path d="M25.9 40.5Q28.9 37.7 37.0 39.7"/><path d="M126.7 60.9Q134.0 61.8 139.7 57.2"/><path d="M168.7 33.4Q187.6 23.9 202.3 17.0"/><path d="M49.7 15.5Q52.1 24.3 58.3 32.1"/><path d="M185.7 31.8Q194.5 24.7 208.7 21.1"/><path d="M197.1 35.4Q206.2 35.0 215.8 37.0"/><path d="M228.5 52.7Q237.0 55.6 245.2 54.0"/><path d="M210.6 26.4Q224.8 39.6 239.9 49.7"/><path d="M51.8 39.3Q58.9 40.7 62.7 41.2"/><path d="M250.8 28.1Q265.9 29.2 280.1 30.9"/><path d="M241.0 68.5Q249.8 71.6 264.0 72.3"/><path d="M188.0 71.6Q199.1 84.1 211.6 94.6"/><path d="M16.2 37.5Q20.4 36.4 29.8 32.1"/><path d="M45.6 23.8Q52.8 27.3 65.1 31.4"/><path d="M161.1 64.5Q175.2 69.9 191.9 76.3"/><path d="M112.5 54.8A29.3 29.3 0 0 1 136.0 69.5"/><path d="M64.7 22.9A17.7 17.7 0 0 1 78.9 31.8"/><path d="M83.7 36.8A23.4 23.4 0 0 1 102.4 48.5"/></g>
+                    <g stroke="#fff6e2" stroke-opacity="0.3" stroke-width="0.5"><path d="M99.1 17.7Q110.6 25.3 121.6 34.6"/><path d="M25.9 40.5Q28.9 37.7 37.0 39.7"/><path d="M126.7 60.9Q134.0 61.8 139.7 57.2"/><path d="M168.7 33.4Q187.6 23.9 202.3 17.0"/><path d="M49.7 15.5Q52.1 24.3 58.3 32.1"/><path d="M185.7 31.8Q194.5 24.7 208.7 21.1"/><path d="M197.1 35.4Q206.2 35.0 215.8 37.0"/><path d="M228.5 52.7Q237.0 55.6 245.2 54.0"/><path d="M210.6 26.4Q224.8 39.6 239.9 49.7"/><path d="M51.8 39.3Q58.9 40.7 62.7 41.2"/><path d="M250.8 28.1Q265.9 29.2 280.1 30.9"/><path d="M241.0 68.5Q249.8 71.6 264.0 72.3"/><path d="M188.0 71.6Q199.1 84.1 211.6 94.6"/><path d="M16.2 37.5Q20.4 36.4 29.8 32.1"/><path d="M45.6 23.8Q52.8 27.3 65.1 31.4"/><path d="M161.1 64.5Q175.2 69.9 191.9 76.3"/><path d="M112.5 54.8A29.3 29.3 0 0 1 136.0 69.5"/><path d="M64.7 22.9A17.7 17.7 0 0 1 78.9 31.8"/><path d="M83.7 36.8A23.4 23.4 0 0 1 102.4 48.5"/></g>
+                    <g stroke="#fff" stroke-opacity="0.95" stroke-width="0.6" mask="url(#np-lit)"><path d="M99.1 17.7Q110.6 25.3 121.6 34.6"/><path d="M25.9 40.5Q28.9 37.7 37.0 39.7"/><path d="M126.7 60.9Q134.0 61.8 139.7 57.2"/><path d="M168.7 33.4Q187.6 23.9 202.3 17.0"/><path d="M49.7 15.5Q52.1 24.3 58.3 32.1"/><path d="M185.7 31.8Q194.5 24.7 208.7 21.1"/><path d="M197.1 35.4Q206.2 35.0 215.8 37.0"/><path d="M228.5 52.7Q237.0 55.6 245.2 54.0"/><path d="M210.6 26.4Q224.8 39.6 239.9 49.7"/><path d="M51.8 39.3Q58.9 40.7 62.7 41.2"/><path d="M250.8 28.1Q265.9 29.2 280.1 30.9"/><path d="M241.0 68.5Q249.8 71.6 264.0 72.3"/><path d="M188.0 71.6Q199.1 84.1 211.6 94.6"/><path d="M16.2 37.5Q20.4 36.4 29.8 32.1"/><path d="M45.6 23.8Q52.8 27.3 65.1 31.4"/><path d="M161.1 64.5Q175.2 69.9 191.9 76.3"/><path d="M112.5 54.8A29.3 29.3 0 0 1 136.0 69.5"/><path d="M64.7 22.9A17.7 17.7 0 0 1 78.9 31.8"/><path d="M83.7 36.8A23.4 23.4 0 0 1 102.4 48.5"/></g>
+                  </g>
+                  <!-- the card's shared light sliding over the metal, like the glare on the glass -->
+                  <g transform="rotate(25 150 40)"><rect class="np-shine" x="-90" y="-80" width="90" height="240" fill="url(#np-band)"/></g>
+                </g>
+                <!-- bevelled edge -->
+                <rect x="2.6" y="2.6" width="294.8" height="74.8" rx="19.4" fill="none" stroke="#fbecc9" stroke-opacity="0.7" stroke-width="1.2"/>
+                <rect x="4.4" y="4.4" width="291.2" height="71.2" rx="17.6" fill="none" stroke="#6e4c22" stroke-opacity="0.35" stroke-width="1"/>
+                <!-- screws -->
+                <g>
+                  <g transform="translate(15 15)"><circle r="3.4" fill="#b98a50"/><circle r="3.4" fill="none" stroke="#fbecc9" stroke-opacity="0.6" stroke-width="0.7"/><path d="M-2.2 0.6L2.2 -0.6" stroke="#5a3d1a" stroke-width="1"/></g>
+                  <g transform="translate(285 15)"><circle r="3.4" fill="#b98a50"/><circle r="3.4" fill="none" stroke="#fbecc9" stroke-opacity="0.6" stroke-width="0.7"/><path d="M-2 -1.2L2 1.2" stroke="#5a3d1a" stroke-width="1"/></g>
+                  <g transform="translate(15 65)"><circle r="3.4" fill="#b98a50"/><circle r="3.4" fill="none" stroke="#fbecc9" stroke-opacity="0.6" stroke-width="0.7"/><path d="M-1.4 -2L1.4 2" stroke="#5a3d1a" stroke-width="1"/></g>
+                  <g transform="translate(285 65)"><circle r="3.4" fill="#b98a50"/><circle r="3.4" fill="none" stroke="#fbecc9" stroke-opacity="0.6" stroke-width="0.7"/><path d="M-2.3 0L2.3 0" stroke="#5a3d1a" stroke-width="1"/></g>
+                </g>
+              </svg>
+            </div>
+            <h1 class="visually-hidden">Raadio — free live radio, voted by its listeners</h1>
+            <!-- In the header row: centred on the logo, right edge in line with the display -->
+            <button type="button" id="auth-btn" class="corner-btn brand-btn" aria-label="Log in">
+              <svg class="icon"><use id="auth-icon" href="#i-login"/><use class="k-wear k-wear--scratch" href="#i-login" fill="url(#k-scratch)" opacity="0.08"/><use class="k-wear k-wear--grime" href="#i-login" fill="url(#k-grime)" opacity="0"/></svg>
+            </button>
+          </header>
+
+          <!-- Station display: a light sunken panel, sits directly in the deck -->
+          <section class="plate" aria-label="Station display">
+            <span class="glass-scratch" aria-hidden="true"></span>
+            <div class="plate-top">
+              <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="plate-chips">
+                <button type="button" class="q-chip" id="quality-btn" aria-pressed="true">HQ</button>
+                <span class="onair keep-chip" id="keep-chip" hidden>Saving</span>
+                <span class="onair" id="onair">Off air</span>
+              </span>
+            </div>
+            <p class="plate-status" role="status" aria-live="polite"><span id="status" class="mq">Ready to play</span></p>
+            <div class="plate-scale" aria-hidden="true"><i></i></div>
+
+            <div class="plate-news" id="plate-news">
+              <p class="plate-label" id="news-label">Coming up</p>
+              <ul id="news-list" class="news-list"></ul>
+              <!-- while a host is live, the display is the chat: lines in the display's own type,
+                   and a line to write on (script: liveChat) -->
+              <div class="plate-chat" id="plate-chat" hidden>
+                <ol class="plate-chat-list" id="chat-list" aria-live="polite" aria-label="Live chat"></ol>
+                <form class="plate-chat-form" id="chat-form" novalidate>
+                  <button type="button" class="plate-chat-name" id="chat-name-btn" aria-label="Change your name"></button>
+                  <input class="plate-chat-input" id="chat-text" maxlength="200" autocomplete="off" enterkeyhint="send" placeholder="Say something…" dir="auto" aria-label="Message to the live chat">
+                  <button type="submit" class="q-chip plate-chat-send" id="chat-send">Send</button>
+                </form>
+                <p class="plate-chat-msg" id="chat-msg" role="alert" hidden></p>
+              </div>
+            </div>
+          </section>
+
+          <section class="song-card" id="song-card" aria-label="Now playing">
+            <h2 id="song-name" class="song-name">Raadio Live</h2>
+            <p id="artist-name" class="artist-name">Listener-voted stream</p>
+          </section>
+
+          <div class="wave" aria-hidden="true"><canvas id="wave"></canvas><span class="glass-scratch"></span></div>
+
+          <div class="controls">
+            <button type="button" id="skip-btn" class="neu-btn neu-btn--round" aria-label="Dislike — vote to skip" aria-pressed="false">
+              <svg class="icon icon--lg metal-icon" viewBox="0 0 24 24"><use href="#i-dislike" fill="url(#k-metal)"/><use class="k-layer" href="#i-dislike" fill="url(#k-scratch)" opacity="0.3"/><use class="k-layer" href="#i-dislike" fill="#fff" opacity="0.28" mask="url(#k-lit-1)"/><use class="k-layer" href="#i-dislike" fill="url(#k-scratch)" mask="url(#k-lit-1)"/></svg>
+              <span class="vote-badge" id="vote-badge" hidden></span>
+            </button>
+            <button type="button" id="play-btn" class="neu-btn neu-btn--hero" aria-label="Play">
+              <svg class="icon icon--xl metal-icon" viewBox="0 0 24 24"><use id="play-icon" href="#i-play" fill="url(#k-metal)"/><use class="k-layer" href="#i-play" fill="url(#k-scratch)" opacity="0.3"/><use class="k-layer" href="#i-play" fill="#fff" opacity="0.28" mask="url(#k-lit-2)"/><use class="k-layer" href="#i-play" fill="url(#k-scratch)" mask="url(#k-lit-2)"/></svg>
+            </button>
+            <!-- (id kept from when this was "save the song": the key wear and the layout know it by it) -->
+            <button type="button" id="save-btn" class="neu-btn neu-btn--round neu-btn--small" aria-label="Like — keep it on air" aria-pressed="false" hidden>
+              <svg class="icon metal-icon" viewBox="0 0 24 24"><use href="#i-like" fill="url(#k-metal)"/><use class="k-layer" href="#i-like" fill="url(#k-scratch)" opacity="0.3"/><use class="k-layer" href="#i-like" fill="#fff" opacity="0.28" mask="url(#k-lit-3)"/><use class="k-layer" href="#i-like" fill="url(#k-scratch)" mask="url(#k-lit-3)"/></svg>
+            </button>
+          </div>
+
+          <footer class="attribution">
+            <button type="button" class="guide-icon" id="guide-icon" aria-label="Open the guide" title="Guide" hidden>
+              <svg class="icon" aria-hidden="true"><use href="#i-guide"/><use class="k-wear k-wear--scratch" href="#i-guide" fill="url(#k-scratch)" opacity="0.08"/><use class="k-wear k-wear--grime" href="#i-guide" fill="url(#k-grime)" opacity="0"/></svg>
+            </button>
+            <span><a class="made-by" href="https://hootan-hsn.framer.website/" target="_blank" rel="noopener author">made by Hootan</a></span>
+          </footer>
+        </article>
+
+        <!-- ============ BACK: studio ============
+             Three tabs, one markup: Home (server status, notes, numbers), Schedule (record,
+             upload, the scheduled list) and Live (going live, the show's music, the chat).
+             Narrow card: title on top, tabs pinned at the bottom. Wide card (desktop): one bar
+             across the top with the tabs in the middle. Script: studioTabs. -->
+        <article class="face face--back deck studio" id="studio" data-tab="home" aria-label="My studio" aria-hidden="true" inert>
+          <!-- Studio (Stitch "Raadio Studio Dashboard"). Wide card: one bar across the top,
+               brand · tabs · tools. Narrow card: a page title on each tab and a deck pinned to
+               the bottom (what's on air, the tabs, sign out). Script: studioTabs, studioChrome. -->
+          <header class="st-bar">
+            <div class="st-brand">
+              <span class="st-mark" aria-hidden="true"><svg class="icon"><use href="#i-radio"/></svg></span>
+              <span class="st-brand-text"><small>Est. frequency Raadio</small><b>raadio <em>Studio</em></b></span>
+            </div>
+            <nav class="studio-tabs" role="tablist" aria-label="Studio">
+              <button type="button" class="studio-tab" id="tab-home" role="tab" data-tab="home" aria-controls="pane-home" aria-selected="true">
+                <svg class="icon" aria-hidden="true"><use href="#i-home"/></svg><span>Home</span>
+              </button>
+              <button type="button" class="studio-tab" id="tab-schedule" role="tab" data-tab="schedule" aria-controls="pane-schedule" aria-selected="false" tabindex="-1">
+                <svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg><span>Schedule</span>
+              </button>
+              <button type="button" class="studio-tab studio-tab--live" id="tab-live" role="tab" data-tab="live" aria-controls="pane-live" aria-selected="false" tabindex="-1">
+                <i class="st-dot" aria-hidden="true"></i><svg class="icon" aria-hidden="true"><use href="#i-live"/></svg><span>Live</span><i class="studio-tab-air" aria-hidden="true">On air</i>
+              </button>
+            </nav>
+            <div class="st-tools">
+              <span class="st-rec" id="st-rec" hidden><i aria-hidden="true"></i>Rec</span>
+              <span class="st-tuning" id="st-tuning" hidden title="Listening now"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-user"/></svg><b id="st-tuning-n">0</b><small>tuning</small></span>
+            </div>
+          </header>
+
+          <button type="button" id="back-btn" class="corner-btn st-radio" aria-label="Back to radio">
+            <svg class="icon"><use href="#i-radio"/></svg>
+          </button>
+          <button type="button" id="st-lang" class="st-lang" lang="fa" aria-label="فارسی / English">فا</button>
+
+          <!-- ---- Home ---- -->
+          <section class="studio-pane" id="pane-home" role="tabpanel" aria-labelledby="tab-home">
+            <div class="st-hero">
+              <header class="studio-head">
+                <h1 class="studio-title">Studio Dashboard</h1>
+                <p class="studio-greeting" id="greeting"></p>
+              </header>
+              <section class="status-strip" aria-labelledby="h-status">
+                <h2 id="h-status" class="plate-label"><i class="status-led" aria-hidden="true"></i>Server status<span class="st-online">Online</span></h2>
+                <ul id="server-log" class="status-list" aria-live="polite"></ul>
+              </section>
+            </div>
+
+            <!-- Notes listeners left with the flamingos (script: notesPanel). For a curator it
+                 moves to the bottom of the "Flamingo notes" tile in the numbers (placeNotes). -->
+            <div id="notes-home">
+            <section class="notes-panel st-card" id="notes-panel" aria-labelledby="h-notes">
+              <h2 id="h-notes" class="studio-section">Flamingo notes</h2>
+              <ul id="notes-list" class="queue-list"></ul>
+              <form id="note-add" class="notes-add">
+                <input class="input" id="note-new" maxlength="55" placeholder="Add a note of your own" dir="auto" aria-label="New note">
+                <button type="submit" class="neu-btn notes-btn">Add</button>
+              </form>
+              <details class="words">
+                <summary>Blocked words <span id="words-count"></span></summary>
+                <p class="notes-help">Notes with these words (or ones starting with them) can't be sent. Tap a word to allow it again.</p>
+                <div id="words-list" class="words-list"></div>
+                <form id="word-add" class="notes-add">
+                  <input class="input" id="word-new" maxlength="40" placeholder="English or Farsi word" dir="auto" aria-label="Word to block">
+                  <button type="submit" class="neu-btn notes-btn">Block</button>
+                </form>
+              </details>
+            </section>
+            </div>
+
+            <!-- Station telemetry: curators only (the numbers come from /api/curator/stats).
+                 Tap a tile to open it across the grid with the details. Every chart is flat and
+                 labeled (script: the chart helpers in the curator module). -->
+            <div class="curator" id="curator" hidden>
+              <div class="an-head">
+                <h2 class="studio-section">Station telemetry <span class="st-chip">Realtime</span></h2>
+                <div class="an-range" id="an-range" role="group" aria-label="Time range">
+                  <button type="button" data-range="day" aria-pressed="false">Day</button>
+                  <button type="button" data-range="week" aria-pressed="true">Week</button>
+                  <button type="button" data-range="month" aria-pressed="false">Month</button>
+                </div>
+              </div>
+
+              <section class="an-group" aria-label="Audience and reactions">
+                <div class="an-tile an-tile--paper" data-tile="now" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>Listening now</span><i class="an-live-dot" aria-hidden="true"></i></header>
+                    <div class="an-big" id="an-now">–</div>
+                    <div class="an-sub" id="an-now-sub"></div>
+                    <div class="an-flags" id="an-now-flags" aria-hidden="true"></div>
+                    <div class="an-more" id="an-now-more"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper" data-tile="globe" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>Where they listen</span></header>
+                    <div class="an-chart" id="an-globe-chart"></div>
+                    <div class="an-sub" id="an-globe-top"></div>
+                    <div class="an-more" id="an-globe-more"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper" data-tile="time" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>Listeners</span></header>
+                    <div class="an-big an-big--sm"><span id="an-avg">–</span> <small class="an-unit">average</small></div>
+                    <div class="an-chart" id="an-time-chart"></div>
+                    <div class="an-sub" id="an-time-sub"></div>
+                    <div class="an-more" id="an-time-more"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper" data-tile="length" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>How long they listen</span></header>
+                    <div class="an-big an-big--sm"><span id="an-length">–</span> <small class="an-unit" id="an-length-unit">median</small></div>
+                    <div class="an-chart" id="an-length-chart"></div>
+                    <div class="an-sub" id="an-length-sub"></div>
+                    <div class="an-more" id="an-length-more"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper" data-tile="heat" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>Busiest times</span></header>
+                    <div class="an-chart" id="an-heat"></div>
+                    <div class="an-sub" id="an-heat-sub"></div>
+                    <div class="an-more" id="an-heat-more"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper" data-tile="skips" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>Skip votes</span></header>
+                    <div class="an-big an-big--sm"><span id="an-skips">–</span> <small class="an-unit">votes</small></div>
+                    <div class="an-chart" id="an-skips-chart"></div>
+                    <div class="an-sub" id="an-skips-sub"></div>
+                    <div class="an-more" id="an-skips-more"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper" data-tile="likes" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>Liked songs</span></header>
+                    <div class="an-big an-big--sm"><span id="an-likes">–</span> <small class="an-unit">likes</small></div>
+                    <div class="an-chart" id="an-likes-chart"></div>
+                    <div class="an-sub" id="an-likes-sub"></div>
+                    <div class="an-more" id="an-likes-more"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper" data-tile="saves" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>Flamingo notes</span><i class="an-live-dot" aria-hidden="true"></i></header>
+                    <div class="an-big an-big--sm"><span id="an-saves">–</span> <small class="an-unit">notes</small></div>
+                    <div class="an-chart" id="an-saves-chart"></div>
+                    <div class="an-sub" id="an-saves-sub"></div>
+                    <div class="an-more" id="an-saves-more"></div>
+                    <div class="an-more an-notes" id="an-notes"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper" data-tile="posters" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>Who posts music</span></header>
+                    <div class="an-kicker" id="an-posters-kicker"></div>
+                    <div class="an-big an-big--sm an-big--name" id="an-posters" dir="auto">–</div>
+                    <div class="an-chart an-chart--list" id="an-posters-chart"></div>
+                    <div class="an-sub" id="an-posters-sub"></div>
+                    <div class="an-more" id="an-posters-more"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper" data-tile="compare" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>This week vs last</span></header>
+                    <div class="an-chart" id="an-compare-chart"></div>
+                    <div class="an-sub" id="an-compare-sub"></div>
+                    <div class="an-more" id="an-compare-more"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper an-tile--wide" data-tile="played" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>Most played</span></header>
+                    <div class="an-chart an-chart--list" id="an-played-chart"></div>
+                    <div class="an-sub" id="an-played-sub"></div>
+                    <div class="an-more" id="an-played-more"></div>
+                  </div>
+                </div>
+                <!-- What's on air now, from the radio side of the card (script: studioChrome) -->
+                <section class="st-now st-card" aria-labelledby="h-st-now">
+                  <header class="st-now-head">
+                    <h2 id="h-st-now" class="st-label"><i class="st-dot" aria-hidden="true"></i>Now playing on air</h2>
+                    <span class="st-chip st-chip--coral" id="st-now-state">Off air</span>
+                  </header>
+                  <div class="st-well st-now-well">
+                    <p class="st-now-song" id="st-now-song" dir="auto"></p>
+                    <p class="st-now-artist" id="st-now-artist" dir="auto"></p>
+                    <div class="st-ticks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  </div>
+                  <div class="st-now-foot">
+                    <button type="button" class="st-play" id="st-now-play" aria-label="Play"><svg class="icon"><use id="st-now-icon" href="#i-play"/></svg></button>
+                    <span class="st-now-note">Listener-voted rotation</span>
+                  </div>
+                </section>
+              </section>
+            </div>
+          </section>
+
+          <!-- ---- Schedule ---- -->
+          <section class="studio-pane" id="pane-schedule" role="tabpanel" aria-labelledby="tab-schedule" hidden>
+            <header class="studio-head st-page-head">
+              <h1 class="studio-title">Studio Schedule</h1>
+              <p class="studio-greeting">Record or upload something, then put it on air at a set time.</p>
+            </header>
+            <div class="actions">
+              <button type="button" id="record-btn" class="action action--rec">
+                <span class="action-top"><span class="action-icon-wrap"><svg class="icon action-icon"><use href="#i-mic"/></svg></span><span class="action-tag action-tag--live">Live mic</span></span>
+                <span class="action-label">Record</span>
+                <span class="action-sub" id="record-sub">Use your microphone</span>
+                <span class="action-cta"><i aria-hidden="true"></i>Start</span>
+              </button>
+              <button type="button" id="upload-btn" class="action action--up">
+                <span class="action-top"><span class="action-icon-wrap"><svg class="icon action-icon"><use href="#i-folder"/></svg></span><span class="action-tag">Audio file</span></span>
+                <span class="action-label">Upload</span>
+                <span class="action-sub">Choose an audio file</span>
+                <span class="action-cta"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>Browse</span>
+              </button>
+              <input type="file" id="audio-upload" accept="audio/*" class="visually-hidden" tabindex="-1">
+            </div>
+
+            <section class="queue" aria-labelledby="h-queue">
+              <h2 id="h-queue" class="studio-section"><i class="st-dot st-dot--gold" aria-hidden="true"></i>Broadcast schedule</h2>
+              <ul id="queue-list" class="queue-list"></ul>
+            </section>
+          </section>
+
+          <!-- ---- Live ---- -->
+          <section class="studio-pane" id="pane-live" role="tabpanel" aria-labelledby="tab-live" hidden>
+            <header class="studio-head st-page-head st-live-intro">
+              <h1 class="studio-title">Live on-air studio</h1>
+              <p class="studio-greeting">Talk to everyone listening, play songs in the show and answer the chat.</p>
+            </header>
+            <button type="button" id="live-btn" class="action action--live">
+              <span class="action-icon-wrap"><svg class="icon action-icon"><use href="#i-live"/></svg></span>
+              <span class="action-text">
+                <span class="action-tag action-tag--live">Booth ready</span>
+                <span class="action-label">Go live</span>
+                <span class="action-sub" id="live-sub">Talk to everyone listening, right now, and chat with them</span>
+              </span>
+              <span class="action-cta"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-live"/></svg>Go live now</span>
+            </button>
+
+            <!-- Going live: ready (a name for the stream), live (the clock, the mic level, the
+                 chat), or someone else's stream (just the chat). Script: liveStudio.
+                 Wide card: the dark booth across the top, the music on the left, the chat on the right. -->
+            <section class="live-panel" id="live-panel" data-state="off" hidden aria-labelledby="h-live">
+              <div class="live-top">
+                <div class="live-top-row">
+                  <span class="live-dot" aria-hidden="true"></span>
+                  <span class="live-badge" aria-hidden="true">You're live</span>
+                  <span class="live-clock" id="live-clock"></span>
+                </div>
+                <h2 id="h-live" class="live-h">Go live</h2>
+                <p class="live-room" id="live-room"></p>
+                <div class="live-meter" aria-hidden="true"><i id="live-level"></i></div>
+                <button type="button" class="btn btn--primary live-join" id="live-join" hidden>Join the broadcast</button>
+                <button type="button" class="btn live-end" id="live-end">End the stream</button>
+              </div>
+              <form class="live-ready" id="live-ready" novalidate>
+                <input class="input" id="live-title" maxlength="60" placeholder="What's the show called? (optional)" dir="auto" aria-label="Stream name">
+                <input class="input" id="live-name" maxlength="24" placeholder="Your name on air" dir="auto" aria-label="Your name on air" autocomplete="off">
+                <label class="live-field"><span>Microphone</span>
+                  <select class="input" id="live-mic" aria-label="Microphone"></select>
+                </label>
+                <div class="live-meter live-meter--form" aria-hidden="true"><i id="live-level-form"></i></div>
+                <p class="live-hint" id="live-mic-hint">Choose the phone or computer's microphone, or the one on your headphones. Bluetooth headphone microphones usually sound thinner; wired ones and the device's are clearer.</p>
+                <label class="live-check" id="live-need-row"><input type="checkbox" id="live-need-phones" checked><span>Everyone must wear headphones (no echo between hosts)</span></label>
+                <label class="live-check"><input type="checkbox" id="live-phones"><span>I'm wearing headphones</span></label>
+                <p class="live-hint" id="live-ready-hint">The music fades out and everyone hears your microphone. A chat opens for all listeners and is deleted when you end. The radio on this device goes quiet while you're live, so your mic doesn't pick it up. Other hosts can join with their studio login. You can play songs during the show: microphones go off air while one plays, unless you press Talk.</p>
+                <div class="live-btns">
+                  <button type="button" class="btn" id="live-cancel">Not now</button>
+                  <button type="submit" class="btn btn--primary" id="live-start">Start</button>
+                </div>
+              </form>
+              <div class="live-on" id="live-on">
+                <!-- This device on air: its microphone, mute, hearing the others, who's on -->
+                <div class="live-desk" id="live-desk" hidden>
+                  <h3 class="live-card-h">On air together</h3>
+                  <ul class="live-hosts" id="live-hosts"></ul>
+                  <label class="live-field"><span>Microphone</span>
+                    <select class="input" id="live-mic-on" aria-label="Microphone"></select>
+                  </label>
+                  <div class="live-desk-btns">
+                    <button type="button" class="btn" id="live-mute" aria-pressed="false">Mute</button>
+                    <button type="button" class="btn" id="live-hear" aria-pressed="false">Hear the others</button>
+                  </div>
+                  <p class="live-hint" id="live-line"></p>
+                </div>
+                <!-- Music in the show: drop songs in (or tap to pick); each plays at once or waits
+                     in the queue. While one plays the mic is off, unless Talk is on. -->
+                <div class="live-music" id="live-music">
+                  <div class="live-now" id="live-now" hidden>
+                    <div class="live-now-top"><span class="live-now-label">On air</span><span class="live-now-name" id="live-now-name" dir="auto"></span></div>
+                    <p class="live-now-hint" id="live-now-hint">Your mic is off while the song plays.</p>
+                    <div class="live-now-btns">
+                      <button type="button" class="btn" id="live-music-stop"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+                      <button type="button" class="btn" id="live-music-skip"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-next"/></svg>Skip</button>
+                      <button type="button" class="btn live-talk" id="live-music-talk" aria-pressed="false"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-mic"/></svg>Talk</button>
+                    </div>
+                  </div>
+                  <h3 class="live-card-h">Broadcast queue</h3>
+                  <div class="live-when" role="radiogroup" aria-label="When a song is added">
+                    <button type="button" class="live-when-btn" id="live-when-queue" role="radio" aria-checked="true">Add to queue</button>
+                    <button type="button" class="live-when-btn" id="live-when-now" role="radio" aria-checked="false">Play now</button>
+                  </div>
+                  <label class="live-drop" id="live-drop">
+                    <input type="file" id="live-file" accept="audio/*" multiple>
+                    <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>
+                    <span id="live-drop-text">Drop songs here, or tap to choose</span>
+                  </label>
+                  <button type="button" class="btn btn--primary live-resume" id="live-music-play" hidden>Play the queue</button>
+                  <ol class="live-queue" id="live-queue"></ol>
+                </div>
+              </div>
+              <div class="live-chat" id="live-chat">
+                <h3 class="live-card-h"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-chat"/></svg>Live station chat</h3>
+                <ol class="chat-list" id="live-chat-list" aria-live="polite"></ol>
+                <form class="chat-row" id="live-chat-form" novalidate>
+                  <input class="input chat-input" id="live-chat-text" maxlength="200" autocomplete="off" placeholder="Answer the chat…" dir="auto" aria-label="Message to the chat">
+                  <button type="submit" class="neu-btn notes-btn"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-send"/></svg>Send</button>
+                </form>
+              </div>
+            </section>
+
+            <!-- The shows' recordings, for a week -->
+            <section class="live-recs" id="live-recs" hidden aria-labelledby="h-live-recs">
+              <h3 id="h-live-recs" class="live-card-h">Show recordings</h3>
+              <p class="live-hint" id="live-recs-up" hidden></p>
+              <ul class="live-rec-list" id="live-recs-list"></ul>
+            </section>
+          </section>
+
+          <!-- What's on air: pinned above the tabs on a narrow card (the tabs move here by CSS order),
+               floating at the bottom of a wide one -->
+          <div class="st-mini" role="group" aria-label="Now playing on air">
+            <i class="st-dot"></i>
+            <span class="st-mini-text"><b id="st-mini-song" dir="auto"></b><small id="st-mini-state">Off air</small></span>
+            <button type="button" class="st-play st-play--sm" id="st-mini-play" aria-label="Play or pause the radio"><svg class="icon"><use id="st-mini-icon" href="#i-play"/></svg></button>
+          </div>
+
+          <footer class="studio-foot">
+            <span>IP geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener">DB-IP</a> · <a class="made-by" href="https://hootan-hsn.framer.website/" target="_blank" rel="noopener author">made by Hootan</a></span>
+            <button type="button" id="logout-btn" class="studio-link">
+              <svg class="icon icon--sm"><use href="#i-logout"/></svg>Sign out
+            </button>
+          </footer>
+        </article>
+      </div>
+    </div>
+  </main>
+
+  <!-- First visit: a paper guide with pencil sketches that move a little on a slow loop
+       (each one shows its button being used). The paper scrolls if it's taller than the
+       screen. "understand" folds it up, tucks it under the button and fades it into the guide
+       key at the bottom of the radio; the key unfolds it again. Script: setupGuide. -->
+  <div class="guide" id="guide" role="dialog" aria-modal="true" aria-labelledby="guide-title" hidden>
+    <svg width="0" height="0" class="visually-hidden" aria-hidden="true">
+      <filter id="gd-pencil" x="-5%" y="-5%" width="110%" height="110%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="2" seed="4" result="n"/>
+        <feDisplacementMap in="SourceGraphic" in2="n" scale="1.8" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+    </svg>
+    <div class="guide-sheet" id="guide-sheet">
+      <div class="guide-page" id="guide-page" tabindex="-1">
+
+        <div class="guide-head">
+        <svg class="guide-hero" viewBox="20 92 330 330" aria-hidden="true">
+          <g class="sk">
+            <!-- headphones, resting on the radio -->
+            <path d="M150 168 C150 116 250 116 250 168"/>
+            <path class="sk-soft" d="M156 168 C156 124 244 124 244 168"/>
+            <rect x="138" y="158" width="20" height="30" rx="9" class="sk-fill"/>
+            <rect x="242" y="158" width="20" height="30" rx="9" class="sk-fill"/>
+            <!-- the radio -->
+            <path d="M268 196 L304 128"/>
+            <circle cx="306" cy="124" r="5" class="sk-fill"/>
+            <rect x="70" y="190" width="230" height="150" rx="40" class="sk-fill"/>
+            <rect x="74" y="194" width="222" height="142" rx="37" class="sk-soft"/>
+            <rect x="86" y="206" width="198" height="118" rx="28" class="sk-paper"/>
+            <circle cx="146" cy="265" r="44" class="sk-fill2"/>
+            <circle cx="146" cy="265" r="35" class="sk-dots"/>
+            <circle cx="146" cy="265" r="44"/>
+            <rect x="204" y="226" width="68" height="30" rx="8" class="sk-dark"/>
+            <path class="sk-tick" d="M212 250V245M220 250V247M228 250V244M236 250V247M244 250V245M252 250V247M260 250V244"/>
+            <path class="sk-needle ga-needle" d="M238 230 V252"/>
+            <g class="ga-knob"><circle cx="220" cy="292" r="15" class="sk-fill2"/><path d="M220 292 L211 282"/></g>
+            <circle cx="262" cy="292" r="15" class="sk-fill2"/><path d="M262 292 L270 281"/>
+            <rect x="100" y="338" width="34" height="14" rx="6" class="sk-fill"/>
+            <rect x="236" y="338" width="34" height="14" rx="6" class="sk-fill"/>
+            <!-- sound coming out -->
+            <path class="ga-wave ga-wave--1" d="M58 238 Q48 265 58 292"/>
+            <path class="ga-wave ga-wave--2" d="M46 228 Q32 265 46 302"/>
+            <path class="ga-wave ga-wave--1" d="M312 244 Q320 265 312 286"/>
+            <path class="ga-wave ga-wave--2" d="M324 234 Q336 265 324 296"/>
+            <!-- notes drifting up -->
+            <g class="ga-note ga-note--1"><ellipse cx="60" cy="190" rx="6" ry="4.5" transform="rotate(-20 60 190)" class="sk-ink"/><path d="M65.5 188 V166 Q72 168 74 174"/></g>
+            <g class="ga-note ga-note--2"><ellipse cx="318" cy="210" rx="5" ry="3.8" transform="rotate(-20 318 210)" class="sk-ink"/><path d="M322.5 208 V190"/></g>
+            <!-- the flamingo float, bobbing -->
+            <g class="ga-float">
+              <ellipse cx="282" cy="398" rx="46" ry="17" class="sk-fill"/>
+              <ellipse cx="282" cy="394" rx="20" ry="6" class="sk-fill2"/>
+              <path d="M252 392 C244 376 246 364 256 356 C264 350 266 342 260 334" class="sk-neck"/>
+              <path d="M252 392 C244 376 246 364 256 356 C264 350 266 342 260 334"/>
+              <circle cx="256" cy="330" r="7" class="sk-fill"/>
+              <path d="M250 328 Q244 330 243 338 L247 335"/>
+            </g>
+            <path class="sk-soft ga-ripple" d="M226 414 Q282 424 338 414"/>
+          </g>
+          <rect x="58" y="372" width="134" height="40" rx="6" class="sk-plaque"/>
+          <rect x="62" y="376" width="126" height="32" rx="4" class="sk-plaque sk-plaque--in"/>
+          <text x="125" y="392" text-anchor="middle" dominant-baseline="central" textLength="112" lengthAdjust="spacingAndGlyphs" class="sk-script">a guide for new listeners</text>
+        </svg>
+
+        <div class="guide-head-text">
+          <h2 class="guide-title" id="guide-title">How to listen</h2>
+          <p class="guide-intro">One live station. Everyone hears the same song; listeners decide what stays.</p>
+        </div>
+        </div>
+
+        <ol class="guide-entries">
+          <li>
+            <svg class="guide-vg" viewBox="0 0 100 100" aria-hidden="true"><g class="sk">
+              <g class="ga-press"><circle cx="46" cy="48" r="30" class="sk-fill"/><circle cx="46" cy="48" r="24" class="sk-soft"/><path d="M39 36 L59 48 L39 60 Z" class="sk-ink"/></g>
+              <circle cx="46" cy="48" r="30" class="ga-ring"/>
+              <path class="ga-wave ga-wave--1 ga-after" d="M84 38 Q90 48 84 58"/><path class="ga-wave ga-wave--2 ga-after" d="M91 32 Q99 48 91 64"/>
+              <g class="ga-finger"><path d="M58 64 C58 58 64 56 67 60 L79 78 C82 83 80 90 74 93 L70 95" class="sk-skin"/><path d="M61 60 Q63 56 66 59"/></g>
+            </g></svg>
+            <div><b>Play</b><p>Tap the big button. It's live, like a radio.</p></div>
+          </li>
+          <li>
+            <svg class="guide-vg" viewBox="0 0 100 100" aria-hidden="true"><g class="sk">
+              <g class="ga-press"><rect x="20" y="20" width="44" height="44" rx="12" class="sk-fill"/>
+                <path d="M33 30 H47 C49 30 50.5 31.4 51 33 L53 41 C53.5 43.4 52 45 50 45 H44 L45 50 C45.4 52 43.6 53.6 42 52.6 L33 44 Z M27 30 H31 V44 H27 Z" class="sk-ink"/></g>
+              <circle cx="42" cy="42" r="22" class="ga-ring"/>
+              <circle cx="30" cy="78" r="4" class="sk-ink"/><circle cx="42" cy="78" r="4" class="sk-ink"/><circle cx="54" cy="78" r="4" class="ga-vote"/>
+              <path class="ga-skip" d="M70 70 L80 78 L70 86 Z M80 70 L90 78 L80 86 Z M92 70 V86"/>
+              <g class="ga-finger"><path d="M54 58 C54 52 60 50 63 54 L75 72 C78 77 76 84 70 87 L66 89" class="sk-skin"/><path d="M57 54 Q59 50 62 53"/></g>
+            </g></svg>
+            <div><b>Vote to skip</b><p>Thumbs-down. Enough votes and it's skipped for everyone.</p></div>
+          </li>
+          <li>
+            <svg class="guide-vg" viewBox="0 0 100 100" aria-hidden="true"><g class="sk">
+              <g class="ga-press"><rect x="20" y="16" width="44" height="44" rx="12" class="sk-fill"/>
+                <path d="M33 50 H47 C49 50 50.5 48.6 51 47 L53 39 C53.5 36.6 52 35 50 35 H44 L45 30 C45.4 28 43.6 26.4 42 27.4 L33 36 Z M27 36 H31 V50 H27 Z" class="sk-ink"/></g>
+              <circle cx="42" cy="38" r="22" class="ga-ring"/>
+              <circle cx="30" cy="78" r="4" class="sk-ink"/><circle cx="42" cy="78" r="4" class="sk-ink"/><circle cx="54" cy="78" r="4" class="ga-unvote"/>
+              <path class="ga-heart" d="M78 84 C70 78 68 74 70 71 C72 68 76 69 78 72 C80 69 84 68 86 71 C88 74 86 78 78 84 Z"/>
+              <g class="ga-finger"><path d="M54 54 C54 48 60 46 63 50 L75 68 C78 73 76 80 70 83 L66 85" class="sk-skin"/><path d="M57 50 Q59 46 62 49"/></g>
+            </g></svg>
+            <div><b>Keep it on air</b><p>Thumbs-up cancels a skip vote and brings the song back more often.</p></div>
+          </li>
+          <li>
+            <svg class="guide-vg" viewBox="0 0 100 100" aria-hidden="true"><g class="sk">
+              <g class="ga-bars"><path class="ga-bar ga-bar--1" d="M30 50 V30"/><path class="ga-bar ga-bar--2" d="M40 50 V22"/><path class="ga-bar ga-bar--3" d="M50 50 V34"/><path class="ga-bar ga-bar--4" d="M60 50 V26"/><path class="ga-bar ga-bar--5" d="M70 50 V36"/></g>
+              <rect x="14" y="62" width="72" height="26" rx="13" class="sk-fill"/>
+              <rect x="16" y="64" width="34" height="22" rx="11" class="ga-knob2 sk-dark"/>
+              <text x="33" y="79" text-anchor="middle" class="ga-lbl ga-lbl--hq">HQ</text>
+              <text x="67" y="79" text-anchor="middle" class="ga-lbl ga-lbl--sv">Saver</text>
+            </g></svg>
+            <div><b>HQ or Saver</b><p>HQ for full sound, Saver for less data. On a weak connection it switches to Saver by itself, and back once it's steady.</p></div>
+          </li>
+          <li class="guide-keep">
+            <svg class="guide-vg" viewBox="0 0 100 100" aria-hidden="true"><g class="sk">
+              <g class="ga-hold"><circle cx="44" cy="46" r="30" class="sk-fill"/><circle cx="44" cy="46" r="24" class="sk-soft"/><path d="M37 34 V58 M51 34 V58" class="sk-ink-line"/></g>
+              <circle cx="44" cy="46" r="30" class="ga-holdring"/>
+              <g class="ga-rec"><circle cx="82" cy="20" r="11" class="sk-fill"/><path d="M82 14 V25 M77 21 L82 26 L87 21"/></g>
+              <g class="ga-finger"><path d="M56 62 C56 56 62 54 65 58 L77 76 C80 81 78 88 72 91 L68 93" class="sk-skin"/><path d="M59 58 Q61 54 64 57"/></g>
+            </g></svg>
+            <div><b>Keep it for later</b><p>Hold play for 3 seconds to save the stream on your phone (last 3 hours). If the connection drops, it plays from there. Hold again to stop.</p></div>
+          </li>
+          <li class="guide-flamingo">
+            <svg class="guide-vg" viewBox="0 0 100 100" aria-hidden="true"><g class="sk">
+              <g transform="translate(-8 26) scale(0.78)" class="guide-lowpoly" data-lowpoly="fly"></g>
+              <g class="ga-note-scroll"><rect x="72" y="58" width="22" height="9" rx="4" class="sk-fill"/><path d="M76 61.5H90M76 64H86" class="sk-soft"/></g>
+              <path class="ga-trail" d="M6 84C24 78 38 90 56 84S82 78 96 82"/>
+            </g></svg>
+            <div><b>Catch a flamingo</b><p>Tap one that lands and give it a note for the sky.</p></div>
+          </li>
+          <li class="guide-studio">
+            <svg class="guide-vg" viewBox="0 0 100 100" aria-hidden="true"><g class="sk">
+              <path d="M40 12 H86 V90" class="sk-soft"/>
+              <rect x="44" y="16" width="38" height="70" class="sk-inside"/>
+              <g class="ga-door"><rect x="44" y="16" width="38" height="70" class="sk-fill2"/><rect x="50" y="22" width="26" height="24" rx="2" class="sk-soft"/><circle cx="76" cy="54" r="2" class="sk-ink"/></g>
+              <path class="ga-arrow" d="M8 51 H38 M30 43 L38 51 L30 59"/>
+            </g></svg>
+            <div><b>Studio</b><p>The door on top is for hosts.</p></div>
+          </li>
+        </ol>
+        <!-- the songs before this one (script: setupNowPlaying fills it from /now-playing) -->
+        <section class="guide-history" id="guide-history" hidden>
+          <h3 class="guide-history-title">Recently played</h3>
+          <ol class="guide-history-list" id="guide-history-list"></ol>
+        </section>
+        <!-- signed in: what this host can do, by name (script: guideLanguage) -->
+        <section class="guide-host" id="guide-host" hidden></section>
+        <p class="guide-sign">Reopen this guide from the little book on the radio.</p>
+        <!-- once it has been folded, the paper keeps its fold lines; they're part of the
+             paper, so they scroll with it (placed by setupGuide) -->
+        <div class="guide-creases" id="guide-creases" aria-hidden="true"><i class="gc gc--v"></i><i class="gc gc--v gc--m"></i><i class="gc gc--v"></i><i class="gc gc--h"></i></div>
+      </div>
+    </div>
+    <button type="button" class="guide-ok" id="guide-ok">understand</button>
+  </div>
+
+  <!-- Login: three fields stacked, closable by tapping outside, Esc, or the small x -->
+  <!-- Flamingos over the page: the one that lands on the radio, and the skywriter -->
+  <div class="fl-layer" id="fl-layer"></div>
+  <div class="sky-layer" id="sky-layer" aria-hidden="true" hidden></div>
+
+  <!-- You caught a flamingo: it looks at you, you give it a note (script: flamingos) -->
+  <dialog id="catch-dialog" class="sheet catch" aria-labelledby="catch-title">
+    <!-- the flamingo peeks over the top edge of the box, looking at you -->
+    <div class="catch-peek" aria-hidden="true"><div class="catch-bird" id="catch-bird"></div></div>
+    <div class="catch-flyer" id="catch-flyer" aria-hidden="true"></div>
+    <!-- (no close button: tapping anywhere outside the box, or Esc, closes it) -->
+    <form id="catch-form" class="catch-form" novalidate>
+      <h2 class="catch-title" id="catch-title">You caught a flamingo!</h2>
+      <div class="catch-row">
+        <div class="catch-note" id="catch-note">
+          <input class="catch-input" id="catch-text" maxlength="55" autocomplete="off" placeholder="Give it a short note…" dir="auto" aria-label="Your note">
+        </div>
+        <button type="submit" class="catch-send" id="catch-send" aria-label="Send"><svg class="icon"><use href="#i-send"/></svg></button>
+      </div>
+      <p class="form-error" id="catch-msg" role="alert" hidden></p>
+    </form>
+  </dialog>
+
+  <dialog id="login-dialog" class="sheet sheet--compact" aria-label="Log in">
+    <button type="button" class="corner-btn corner-btn--sm" data-close aria-label="Close">
+      <svg class="icon icon--sm"><use href="#i-close"/></svg>
+    </button>
+    <form id="login-form" class="login-form" novalidate>
+      <div class="field">
+        <label class="field-label" for="username">Username</label>
+        <input class="input" type="text" id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      </div>
+      <div class="field">
+        <label class="field-label" for="password">Password</label>
+        <div class="pw-wrap">
+          <input class="input" type="password" id="password" name="password" autocomplete="current-password" required>
+          <button type="button" class="pw-toggle" id="pw-toggle" aria-label="Show password" aria-pressed="false" aria-controls="password">
+            <svg class="icon icon--sm"><use id="pw-icon" href="#i-eye"/></svg>
+          </button>
+        </div>
+      </div>
+      <button type="submit" class="neu-btn neu-btn--wide neu-btn--accent" id="login-submit">Log in</button>
+      <p class="form-error" id="login-error" role="alert" hidden></p>
+      <p class="demo-note" style="margin:0;font-size:.8rem;opacity:.7;text-align:center">Demo login: any name and password work. They stay in your browser.</p>
+    </form>
+  </dialog>
+
+  <!-- Record / upload -> when -> repeat -> (keep a copy) -> done -->
+  <dialog id="flow" class="flow" aria-labelledby="flow-title" data-sticky>
+    <header class="flow-head">
+      <h2 id="flow-title" class="flow-title">Recording</h2>
+      <button type="button" class="flow-close" id="flow-close" aria-label="Cancel">
+        <svg class="icon icon--sm"><use href="#i-close"/></svg>
+      </button>
+    </header>
+    <div class="flow-file" id="flow-file" hidden>
+      <span class="flow-file-name" id="flow-file-name"></span>
+      <span class="flow-file-state" id="flow-file-state"></span>
+      <span class="flow-bar" aria-hidden="true"><i id="flow-bar"></i></span>
+    </div>
+
+    <section class="step" data-step="record">
+      <p class="rec-clock"><span class="rec-dot" aria-hidden="true"></span><span id="rec-clock">00:00</span></p>
+      <p class="step-note">Recording from your microphone. Up to 10 minutes.</p>
+      <button type="button" class="btn btn--primary btn--wide" id="rec-stop">
+        <svg class="icon icon--sm"><use href="#i-stop"/></svg>Stop
+      </button>
+    </section>
+
+    <section class="step" data-step="when" hidden>
+      <p class="when-summary" id="when-summary" aria-live="polite"></p>
+      <div class="cal">
+        <div class="cal-bar">
+          <button type="button" class="icon-btn" id="cal-prev" aria-label="Previous month"><svg class="icon icon--sm"><use href="#i-prev"/></svg></button>
+          <span class="cal-month" id="cal-month"></span>
+          <button type="button" class="icon-btn" id="cal-next" aria-label="Next month"><svg class="icon icon--sm"><use href="#i-next"/></svg></button>
+        </div>
+        <div class="cal-week" id="cal-week" aria-hidden="true"></div>
+        <div class="cal-grid" id="cal-grid"></div>
+      </div>
+      <div class="tuner" id="tuner"></div>
+      <p class="step-error" id="when-error" role="alert" hidden></p>
+      <button type="button" class="btn btn--primary btn--wide" id="when-next">Next</button>
+    </section>
+
+    <section class="step" data-step="repeat" hidden>
+      <p class="step-lead" id="repeat-lead"></p>
+      <p class="step-note">Turn on a day to play it again at the same time.</p>
+      <div class="day-row" id="day-row"></div>
+      <p class="step-note" id="repeat-count"></p>
+      <p class="step-error" id="repeat-error" role="alert" hidden></p>
+      <div class="step-actions">
+        <button type="button" class="btn" id="repeat-back">Back</button>
+        <button type="button" class="btn btn--primary" id="schedule-btn">Schedule</button>
+      </div>
+    </section>
+
+    <section class="step" data-step="keep" hidden>
+      <p class="step-lead">Save a copy of this recording on your device?</p>
+      <p class="step-note">It downloads as an MP3.</p>
+      <p class="step-note">The radio's copy is deleted after its last airing.</p>
+      <div class="step-actions">
+        <button type="button" class="btn" id="keep-no">No thanks</button>
+        <button type="button" class="btn btn--primary" id="keep-yes">
+          <svg class="icon icon--sm"><use href="#i-download"/></svg><span>Save copy</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="step step--done" data-step="done" hidden>
+      <span class="done-mark" aria-hidden="true"><svg class="icon"><use href="#i-check"/></svg></span>
+      <p class="step-lead">Scheduled</p>
+      <p class="step-note" id="done-note"></p>
+    </section>
+  </dialog>
+
+  <script src="script.js?v=__BUILD__" defer></script>
+</body>
+</html>

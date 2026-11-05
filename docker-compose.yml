@@ -1,0 +1,58 @@
+# Raadio: Icecast + controller in containers.
+#
+#   docker compose up -d --build     build and start
+#   docker compose logs -f           follow logs
+#   docker compose ps                status and health
+#   docker compose down              stop
+#
+# The host's Nginx + Certbot proxy to 127.0.0.1:8000 (Icecast) and 127.0.0.1:8080
+# (controller); see deploy/nginx/.
+
+name: raadio
+
+services:
+  icecast:
+    build: ./deploy/icecast
+    image: raadio-icecast:latest
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"        # only reachable from this server (Nginx)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  controller:
+    build: ./controller
+    image: raadio-controller:latest
+    env_file: .env
+    environment:
+      # These override .env: inside Docker, Icecast is reached by its service name
+      ICECAST_HOST: icecast
+      ICECAST_PORT: "8000"
+      API_HOST: 0.0.0.0
+      API_PORT: "8080"
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data                  # Telegram session, database, downloads
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      icecast:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/now-playing', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: *logging

@@ -1,0 +1,19 @@
+{
+  "id": "./",
+  "name": "Raadio",
+  "short_name": "Raadio",
+  "description": "A live, listener-voted radio station.",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ebe7e0",
+  "theme_color": "#ebe7e0",
+  "categories": ["music", "entertainment"],
+  "icons": [
+    { "src": "icons/flamingo-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/flamingo-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/flamingo-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/flamingo.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

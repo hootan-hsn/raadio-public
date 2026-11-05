@@ -1,0 +1,94 @@
+<!--
+  Raadio Icecast config TEMPLATE. Values like ${ICECAST_SOURCE_PASSWORD} are filled in
+  from .env when the container starts (see entrypoint.sh). No real passwords in this file.
+-->
+<icecast>
+    <location>Earth</location>
+    <admin>${ICECAST_ADMIN_EMAIL}</admin>
+    <hostname>${ICECAST_HOSTNAME}</hostname>
+
+    <limits>
+        <clients>${ICECAST_MAX_LISTENERS}</clients>
+        <sources>6</sources>
+        <queue-size>524288</queue-size>
+        <client-timeout>30</client-timeout>
+        <header-timeout>15</header-timeout>
+        <source-timeout>30</source-timeout>
+        <burst-on-connect>1</burst-on-connect>
+        <!-- What a new listener gets at once. Browsers won't start playing until they hold a
+             fixed amount of data (measured in Chrome: ~32 KB of Opus, ~128 KB of MP3, whatever
+             the bitrate); anything less and they sit waiting for the rest to trickle in at
+             real-time speed (2 s burst = 2-6 s of silence after pressing play). So each mount
+             sends that amount plus three extra seconds of audio (bitrate / 8 bytes per second):
+             playback still starts at once, with 3 s in hand against network hiccups. (With
+             only 1 s, a hiccup in the first minute cut the sound; once a player had stalled
+             and refilled it ran smoothly, which is what this extra start buffer does up front.)
+             The player measures the resulting delay itself, so the waveform and title stay
+             in sync. -->
+        <burst-size>56000</burst-size>
+    </limits>
+
+    <authentication>
+        <source-password>${ICECAST_SOURCE_PASSWORD}</source-password>
+        <relay-password>${ICECAST_RELAY_PASSWORD}</relay-password>
+        <admin-user>admin</admin-user>
+        <admin-password>${ICECAST_ADMIN_PASSWORD}</admin-password>
+    </authentication>
+
+    <!-- Inside the container network only; the host publishes it on 127.0.0.1 -->
+    <listen-socket>
+        <port>8000</port>
+    </listen-socket>
+
+    <mount type="normal">
+        <mount-name>/radio.mp3</mount-name>
+        <burst-size>176000</burst-size>   <!-- MP3 128k: Chrome starts at ~128 KB, +3 s -->
+        <stream-name>Raadio</stream-name>
+        <public>0</public>
+    </mount>
+
+    <mount type="normal">
+        <mount-name>/radio.opus</mount-name>
+        <burst-size>56000</burst-size>   <!-- Opus 64k: Chrome starts at ~32 KB, +3 s -->
+        <stream-name>Raadio (Opus)</stream-name>
+        <public>0</public>
+    </mount>
+
+    <mount type="normal">
+        <mount-name>/radio-lite.opus</mount-name>
+        <burst-size>44000</burst-size>   <!-- Opus 32k: Chrome starts at ~32 KB, +3 s -->
+        <stream-name>Raadio (Opus, data saver)</stream-name>
+        <public>0</public>
+    </mount>
+
+    <mount type="normal">
+        <mount-name>/radio-lite.mp3</mount-name>
+        <burst-size>152000</burst-size>   <!-- MP3 64k: Chrome starts at ~128 KB, +3 s -->
+        <stream-name>Raadio (MP3, data saver)</stream-name>
+        <public>0</public>
+    </mount>
+
+    <fileserve>1</fileserve>
+
+    <paths>
+        <basedir>/usr/share/icecast2</basedir>
+        <logdir>/var/log/icecast2</logdir>
+        <webroot>/usr/share/icecast2/web</webroot>
+        <adminroot>/usr/share/icecast2/admin</adminroot>
+        <alias source="/" destination="/status.xsl"/>
+    </paths>
+
+    <logging>
+        <!-- access.log is a link to /dev/null (entrypoint.sh): no listener addresses kept -->
+        <accesslog>access.log</accesslog>
+        <errorlog>error.log</errorlog>
+        <!-- 4 = debug, 3 = info, 2 = warn, 1 = error -->
+        <loglevel>3</loglevel>
+        <logsize>10000</logsize>
+        <logarchive>0</logarchive>
+    </logging>
+
+    <security>
+        <chroot>0</chroot>
+    </security>
+</icecast>

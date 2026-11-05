@@ -1,0 +1,10 @@
+# Raadio: everything public may be indexed; the studio's API isn't a page
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /radio.mp3
+Disallow: /radio.opus
+Disallow: /radio-lite.mp3
+Disallow: /radio-lite.opus
+
+Sitemap: https://raadio.xyz/sitemap.xml
