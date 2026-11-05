@@ -15,10 +15,17 @@
 
 ![Raadio player](screenshot.png)
 
+![Raadio playing](demo.gif)
+
 </div>
 
 One live station: everyone hears the same song at the same moment, and enough skip votes
 move it along for everyone.
+
+Raadio is a self-hosted internet radio station you run yourself. Songs come from a Telegram
+channel you control, the controller lines them up and levels them, Icecast streams them to
+everyone at once, and listeners vote songs off — no streaming service in the middle, and no
+account needed to listen.
 
 ## Features
 
@@ -32,6 +39,10 @@ move it along for everyone.
 - **Installable PWA** in English and Persian, with a first-visit guide and light and dark themes
 - **Relay script** for serving listeners through a second server under its own domain
 - **Infrastructure as code:** Docker Compose, Nginx and Terraform on AWS
+- **Your music, your server:** the library is a Telegram channel you control, and the whole
+  station runs on one server you own
+- **No build step, no framework in the player:** vanilla JavaScript, plain HTML audio, and a
+  Three.js sky — open `web/` and it runs
 
 ## How it works
 
@@ -57,6 +68,9 @@ flowchart LR
 | Checks | GitHub Actions: Python, JavaScript, ShellCheck, Nginx, Docker, Terraform |
 
 ## Run it
+
+Two ways in: just listen at [raadio.xyz](https://raadio.xyz) — nothing to install — or run
+your own station with Docker (below).
 
 You need Docker and [Telegram API credentials](https://my.telegram.org), plus a Telegram
 channel you control that holds your music.
