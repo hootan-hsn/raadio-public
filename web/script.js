@@ -2274,7 +2274,7 @@
       entries: [
         ["پخش", "دکمه‌ی بزرگ را بزنید. زنده است، مثل رادیو."],
         ["رأی برای رد کردن", "انگشت رو به پایین. با رأی کافی، آهنگ برای همه رد می‌شود."],
-        ["روی آنتن نگهش دارید", "انگشت رو به بالا یک رأیِ رد را پس می‌گیرد و آهنگ بیشتر پخش می‌شود."],
+        ["روی آنتن نگهش دارید", "انگشت رو به بالا یک رأیِ رد را پس می‌گیرد."],
         ["کیفیت بالا یا کم‌مصرف", "HQ برای صدای کامل، کم‌مصرف برای مصرف کمتر. با اتصال ضعیف خودش کم‌مصرف می‌شود و وقتی پایدار شد برمی‌گردد."],
         ["برای بعد نگهش دارید", "دکمه‌ی پخش را ۳ ثانیه نگه دارید تا پخش روی گوشی ذخیره شود (سه ساعت آخر). اگر اتصال قطع شود، از همان پخش می‌شود. برای توقف دوباره نگه دارید."],
         ["یک فلامینگو بگیرید", "روی فلامینگویی که می‌نشیند بزنید و یادداشتی برای آسمان به آن بدهید."],
@@ -2345,6 +2345,8 @@
       },
       sign: q(".guide-sign").textContent, ok: $("guide-ok").textContent, saver: (q(".ga-lbl--sv") || {}).textContent, other: "فارسی"
     };
+    // The listen-only demo: only what's available there (no votes, no notes)
+    if (CONFIG.READ_ONLY) lis.forEach(function (li, i) { if (i === 1 || i === 2 || i === 5) li.style.display = "none"; });
     var sw = document.createElement("button");
     sw.type = "button"; sw.className = "guide-lang";
     page.insertBefore(sw, page.firstChild);
@@ -2354,7 +2356,7 @@
       // (the words drawn inside the sketches stay as they are: Chrome can hang laying out
       // Farsi inside those small drawings)
       q(".guide-title").textContent = T.title;
-      q(".guide-intro").textContent = T.intro;
+      q(".guide-intro").textContent = CONFIG.READ_ONLY ? T.intro.replace(/(;| و شنونده‌ها).*$/, ".") : T.intro;
       var who = typeof session !== "undefined" && session && session.user ? session : null;
       Array.prototype.forEach.call(lis, function (li, i) {
         if (!T.entries[i]) return;
@@ -2684,7 +2686,7 @@
       en: [
         ["One tap starts the live stream; tap again to stop.", "Everyone hears the same song at the same moment, like a real radio.", "The display says On air while you're connected, and Tuning while it catches up."],
         ["Thumbs-down adds your vote to skip the song for everyone.", "When enough listeners vote, the song ends early and the next one starts.", "Songs that get skipped a lot come round less often."],
-        ["Thumbs-up takes back a skip vote.", "Songs people keep move up the rotation and come back more often.", "It's how listeners shape the station together."],
+        ["Thumbs-up takes back a skip vote.", "It's how listeners shape the station together."],
         ["HQ plays the full-quality sound.", "Saver uses much less data, good on mobile data.", "On a weak connection it drops to Saver by itself, and goes back to HQ once it's steady."],
         ["While it plays, hold Play for 3 seconds: the display shows Saving.", "The last 3 hours stay on your phone.", "If the connection drops, the display shows Tape and it plays on from what it saved, then goes back to live by itself. Hold again to stop."],
         ["Now and then a flamingo flies by and lands on the radio.", "Tap it and write a short note: it carries it off and writes it in the sky for everyone listening.", "Notes are checked before they fly."],
@@ -2693,7 +2695,7 @@
       fa: [
         ["با یک ضربه پخش زنده شروع می‌شود؛ دوباره بزنید تا متوقف شود.", "همه در یک لحظه یک آهنگ را می‌شنوند، مثل یک رادیوی واقعی.", "تا وقتی وصل هستید نمایشگر «روی آنتن» را نشان می‌دهد."],
         ["انگشت رو به پایین رأی شما را برای رد کردن آهنگ ثبت می‌کند.", "وقتی رأی‌ها کافی شود، آهنگ زودتر تمام می‌شود و آهنگ بعدی شروع می‌شود.", "آهنگ‌هایی که زیاد رد می‌شوند کمتر پخش می‌شوند."],
-        ["انگشت رو به بالا یک رأیِ رد را پس می‌گیرد.", "آهنگ‌هایی که شنونده‌ها نگه می‌دارند بالاتر می‌روند و بیشتر پخش می‌شوند.", "شنونده‌ها این‌طور با هم ایستگاه را می‌سازند."],
+        ["انگشت رو به بالا یک رأیِ رد را پس می‌گیرد.", "شنونده‌ها این‌طور با هم ایستگاه را می‌سازند."],
         ["HQ صدا را با کیفیت کامل پخش می‌کند.", "کم‌مصرف داده‌ی خیلی کمتری مصرف می‌کند؛ برای اینترنت موبایل مناسب است.", "با اتصال ضعیف خودش کم‌مصرف می‌شود و وقتی اتصال پایدار شد به HQ برمی‌گردد."],
         ["هنگام پخش، دکمه‌ی پخش را ۳ ثانیه نگه دارید؛ نمایشگر «در حال ذخیره» را نشان می‌دهد.", "سه ساعت آخر روی گوشی‌تان می‌ماند.", "اگر اتصال قطع شود، نمایشگر «نوار» را نشان می‌دهد و از همان ذخیره پخش می‌کند، بعد خودش به پخش زنده برمی‌گردد. برای توقف دوباره نگه دارید."],
         ["گاهی فلامینگویی می‌آید و روی رادیو می‌نشیند.", "رویش بزنید و یادداشت کوتاهی بنویسید؛ آن را می‌برد و برای همه‌ی شنونده‌ها در آسمان می‌نویسد.", "یادداشت‌ها پیش از پرواز بررسی می‌شوند."],
