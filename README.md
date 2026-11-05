@@ -15,8 +15,6 @@
 
 ![Raadio player](screenshot.png)
 
-![Raadio playing](demo.gif)
-
 </div>
 
 One live station: everyone hears the same song at the same moment, and enough skip votes
@@ -26,6 +24,8 @@ Raadio is a self-hosted internet radio station you run yourself. Songs come from
 channel you control, the controller lines them up and levels them, Icecast streams them to
 everyone at once, and listeners vote songs off — no streaming service in the middle, and no
 account needed to listen.
+
+![Raadio playing](demo.gif)
 
 ## Features
 
