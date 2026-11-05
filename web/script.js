@@ -13,6 +13,8 @@
     // A pretend login for trying the studio: any name and password work, they never leave the
     // browser, and nothing is saved. Set to false on your own station to use real accounts.
     DEMO_LOGIN: true,
+    // The demo on GitHub Pages only listens: no skip votes or notes reach the station.
+    READ_ONLY: /\.github\.io$/.test(location.hostname),
     // Tried in order; the first that answers wins, the rest are fallbacks.
     HOSTS: [
       "https://raadio.xyz",
@@ -1788,6 +1790,7 @@
   }
 
   function postJSON(url, ms, headers, body) {
+    if (CONFIG.READ_ONLY) return Promise.resolve({ status: "error", message: "Voting and notes are off in this demo" });
     var ctrl = "AbortController" in window ? new AbortController() : null;
     var t = setTimeout(function () { if (ctrl) ctrl.abort(); }, ms);
     return fetch(url, { method: "POST", cache: "no-store", headers: headers || {}, body: body, signal: ctrl ? ctrl.signal : undefined })

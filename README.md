@@ -11,7 +11,7 @@
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED)
 ![Terraform](https://img.shields.io/badge/Terraform-AWS-7B42BC)
 
-[**Listen live at raadio.xyz**](https://raadio.xyz) · English and Persian · installable as an app
+[**Try the demo**](https://hootan-hsn.github.io/raadio-public/) · [Listen at raadio.xyz](https://raadio.xyz) · English and Persian · installable as an app
 
 ![Raadio player](screenshot.png)
 
