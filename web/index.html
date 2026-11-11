@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#ebe7e0" id="theme-color">
-  <meta name="description" content="Raadio is a free live radio station where the listeners choose the music: vote to skip, save the song you love, and leave a note for a flamingo to skywrite. Persian and world music, playing now.">
+  <meta name="description" content="Raadio is a free live radio station where the listeners choose the music: dislike to skip, save the song you love, and leave a note for a flamingo to skywrite. Persian and world music, playing now.">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -24,7 +24,7 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Raadio">
   <meta property="og:title" content="Raadio — free live radio, voted by its listeners">
-  <meta property="og:description" content="One live station, everyone hearing the same song at the same moment. Vote to skip, save what you love, catch a flamingo.">
+  <meta property="og:description" content="One live station, everyone hearing the same song at the same moment. Dislike to skip, save what you love, catch a flamingo.">
   <meta property="og:url" content="https://raadio.xyz/">
   <meta property="og:image" content="https://raadio.xyz/icons/og-image.jpg">
   <meta property="og:image:width" content="1200">
@@ -34,7 +34,7 @@
   <meta property="og:locale:alternate" content="fa_IR">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Raadio — free live radio, voted by its listeners">
-  <meta name="twitter:description" content="One live station, everyone hearing the same song at the same moment. Vote to skip, save what you love, catch a flamingo.">
+  <meta name="twitter:description" content="One live station, everyone hearing the same song at the same moment. Dislike to skip, save what you love, catch a flamingo.">
   <meta name="twitter:image" content="https://raadio.xyz/icons/og-image.jpg">
 
   <!-- What search engines read about the station -->
@@ -93,7 +93,7 @@
   <noscript>
     <div style="max-width:40em;margin:2em auto;padding:0 1em;font:16px/1.6 system-ui,sans-serif;color:#26241f">
       <h2>Raadio — free live radio, voted by its listeners</h2>
-      <p>Raadio is one live station: everyone hears the same song at the same moment, and the listeners decide what stays on air. Vote to skip a song, save the one you love, and catch a flamingo to leave a note it skywrites for everyone.</p>
+      <p>Raadio is one live station: everyone hears the same song at the same moment, and the listeners decide what stays on air. Dislike a song to skip it, save the one you love, and catch a flamingo to leave a note it skywrites for everyone.</p>
       <p dir="rtl" lang="fa">رادیو یک ایستگاه زنده است: همه هم‌زمان یک آهنگ را می‌شنوند و شنونده‌ها تصمیم می‌گیرند چه چیزی پخش بماند.</p>
       <p>Raadio needs JavaScript to play. Please turn it on and reload the page.</p>
     </div>
@@ -338,7 +338,7 @@
           <div class="wave" aria-hidden="true"><canvas id="wave"></canvas><span class="glass-scratch"></span></div>
 
           <div class="controls">
-            <button type="button" id="skip-btn" class="neu-btn neu-btn--round" aria-label="Dislike — vote to skip" aria-pressed="false">
+            <button type="button" id="skip-btn" class="neu-btn neu-btn--round" aria-label="Dislike: enough dislikes skip the song" aria-pressed="false">
               <svg class="icon icon--lg metal-icon" viewBox="0 0 24 24"><use href="#i-dislike" fill="url(#k-metal)"/><use class="k-layer" href="#i-dislike" fill="url(#k-scratch)" opacity="0.3"/><use class="k-layer" href="#i-dislike" fill="#fff" opacity="0.28" mask="url(#k-lit-1)"/><use class="k-layer" href="#i-dislike" fill="url(#k-scratch)" mask="url(#k-lit-1)"/></svg>
               <span class="vote-badge" id="vote-badge" hidden></span>
             </button>
@@ -489,7 +489,7 @@
                 </div>
                 <div class="an-tile an-tile--paper" data-tile="skips" tabindex="0" role="button" aria-expanded="false">
                   <div class="an-face">
-                    <header class="an-title"><span>Skip votes</span></header>
+                    <header class="an-title"><span>Dislikes</span></header>
                     <div class="an-big an-big--sm"><span id="an-skips">–</span> <small class="an-unit">votes</small></div>
                     <div class="an-chart" id="an-skips-chart"></div>
                     <div class="an-sub" id="an-skips-sub"></div>
@@ -531,6 +531,35 @@
                     <div class="an-chart" id="an-compare-chart"></div>
                     <div class="an-sub" id="an-compare-sub"></div>
                     <div class="an-more" id="an-compare-more"></div>
+                  </div>
+                </div>
+                <div class="an-tile an-tile--paper an-tile--wide" data-tile="tiers" tabindex="0" role="button" aria-expanded="false">
+                  <div class="an-face">
+                    <header class="an-title"><span>Songs in each tier</span></header>
+                    <div class="an-chart" id="an-tiers-chart"></div>
+                    <div class="an-sub" id="an-tiers-sub"></div>
+                    <div class="an-more">
+                      <div class="rot-tools">
+                        <input type="search" class="tiers-search" id="tiers-search" placeholder="Find a song" aria-label="Find a song">
+                        <select class="rot-sort" id="tiers-sort" aria-label="Sort songs">
+                          <option value="plays">Most played</option>
+                          <option value="saves">Most downloaded</option>
+                          <option value="votes">Most dislikes</option>
+                          <option value="skips">Most skipped</option>
+                          <option value="rate">Highest skip rate</option>
+                          <option value="title">A–Z</option>
+                        </select>
+                      </div>
+                      <div class="rot-chips" id="tiers-bar" role="group" aria-label="Show tier"></div>
+                      <div class="rot-key" aria-hidden="true">
+                        <span><svg class="icon"><use href="#i-play"/></svg>plays</span>
+                        <span><svg class="icon"><use href="#i-download"/></svg>downloads</span>
+                        <span><svg class="icon"><use href="#i-dislike"/></svg>dislikes</span>
+                        <span><svg class="icon"><use href="#i-next"/></svg>skipped</span>
+                      </div>
+                      <div class="tiers-list" id="tiers-list"></div>
+                      <p class="rot-note">Every song starts at 0. Dislikes move it down, likes up; blocked is off the air until changed by hand. A star (many likes, pinned or newly posted, or the ★ button) plays most for two weeks, then it's tier 1.</p>
+                    </div>
                   </div>
                 </div>
                 <div class="an-tile an-tile--paper an-tile--wide" data-tile="played" tabindex="0" role="button" aria-expanded="false">
@@ -801,7 +830,7 @@
               <path class="ga-skip" d="M70 70 L80 78 L70 86 Z M80 70 L90 78 L80 86 Z M92 70 V86"/>
               <g class="ga-finger"><path d="M54 58 C54 52 60 50 63 54 L75 72 C78 77 76 84 70 87 L66 89" class="sk-skin"/><path d="M57 54 Q59 50 62 53"/></g>
             </g></svg>
-            <div><b>Vote to skip</b><p>Thumbs-down. Enough votes and it's skipped for everyone.</p></div>
+            <div><b>Dislike</b><p>Thumbs-down. Enough dislikes and it's skipped for everyone.</p></div>
           </li>
           <li>
             <svg class="guide-vg" viewBox="0 0 100 100" aria-hidden="true"><g class="sk">
@@ -812,7 +841,7 @@
               <path class="ga-heart" d="M78 84 C70 78 68 74 70 71 C72 68 76 69 78 72 C80 69 84 68 86 71 C88 74 86 78 78 84 Z"/>
               <g class="ga-finger"><path d="M54 54 C54 48 60 46 63 50 L75 68 C78 73 76 80 70 83 L66 85" class="sk-skin"/><path d="M57 50 Q59 46 62 49"/></g>
             </g></svg>
-            <div><b>Keep it on air</b><p>Thumbs-up cancels a skip vote.</p></div>
+            <div><b>Keep it on air</b><p>Thumbs-up cancels a dislike.</p></div>
           </li>
           <li>
             <svg class="guide-vg" viewBox="0 0 100 100" aria-hidden="true"><g class="sk">
