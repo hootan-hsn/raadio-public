@@ -30,8 +30,9 @@ import time
 import urllib.request
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+import rank
 from studio import get_zone
 
 ACTIVE_FOR = 45                    # seconds a player counts as listening after its last poll
@@ -563,17 +564,41 @@ def session_figures(seconds):
 
 
 class Tiers:
-    """Read and change the rotation tier of each song (track_stats in the radio database)."""
+    """Read and change each song's tier: star, 1, 0, -1 or blocked (rank.py; track_stats in
+    the radio database). Every tier can be set by hand; a star set by hand lasts two weeks."""
 
-    def __init__(self, db_file, tier_limits, on_change=None):
+    def __init__(self, db_file, _unused=None, on_change=None):
         self.db_file = db_file
-        self.limits = tier_limits            # skip_score needed for tiers 2, 3, 4, 5
         self.on_change = on_change
+        self._ready = False
 
     def _conn(self):
         conn = sqlite3.connect(self.db_file, timeout=10)
         conn.row_factory = sqlite3.Row
+        if not self._ready:
+            try:
+                rank.ensure_columns(conn)
+                conn.commit()
+                self._ready = True
+            except sqlite3.OperationalError:
+                pass
         return conn
+
+    @staticmethod
+    def _row(r, now):
+        k, until = r["rank"] if r["rank"] is not None else 0, r["star_until"]
+        if k == rank.STAR and (not until or until <= now):
+            k, until = 1, None                       # (two weeks up: tier 1, as the play loop will write)
+        return {"tier": k, "tierName": rank.NAMES[k], "starUntil": until if k == rank.STAR else None}
+
+    def list(self):
+        with self._conn() as c:
+            rows = c.execute("""SELECT telegram_msg_id AS id, title, rank, star_until, skip_score, play_count, skip_count
+                                FROM track_stats ORDER BY title COLLATE NOCASE""").fetchall()
+        now = time.time()
+        return [{"id": r["id"], "title": r["title"] or f"Track {r['id']}", **self._row(r, now),
+                 "score": round(r["skip_score"] or 0, 1), "plays": r["play_count"] or 0,
+                 "skips": r["skip_count"] or 0} for r in rows]
 
     def posters(self, per_song=None):
         """Who posts the channel's songs (the channel's signature on each post): how many songs
@@ -646,7 +671,7 @@ class Tiers:
                 log, since = [], None
             ids = {r["id"] for r in log}
             names = {r["telegram_msg_id"]: r for r in c.execute(
-                "SELECT telegram_msg_id, title, tier, boost FROM track_stats")}
+                "SELECT telegram_msg_id, title, rank, star_until FROM track_stats")}
             try:
                 posted = {r["telegram_msg_id"]: r["posted_at"] for r in c.execute(
                     "SELECT telegram_msg_id, posted_at FROM track_meta WHERE posted_at IS NOT NULL")}
@@ -670,7 +695,7 @@ class Tiers:
                 got = react.get(i) or {}
                 out.append({"id": i, "title": (info["title"] if info else None) or f"Track {i}",
                             "plays": sum(why.values()), "why": why, "posted": posted.get(i),
-                            "tier": (info["tier"] if info else 1) or 1, "boost": (info["boost"] if info else 0) or 0,
+                            **(self._row(info, now) if info else {"tier": 0, "tierName": "0", "starUntil": None}),
                             "likes": got.get("like", 0), "votes": got.get("vote", 0)})
             return out
         return {"week": top(7), "month": top(30), "since": since, "plays": {"week": sum(1 for r in log if r["ts"] >= now - 7 * 86400), "month": len(log)},
@@ -686,6 +711,25 @@ class Tiers:
             rows = c.execute(f"SELECT telegram_msg_id AS id, title FROM track_stats WHERE telegram_msg_id IN "
                              f"({','.join('?' * len(ids))})", ids).fetchall()
         return {r["id"]: r["title"] for r in rows}
+
+    def update(self, track_id, data, curator):
+        """{"tier": "star" | 1 | 0 | -1 | "blocked"}: set by hand. The score goes to the bottom
+        of the new tier, so listeners' likes and dislikes carry on from there; a star lasts
+        rank.STAR_DAYS from now; blocked stays until changed here again."""
+        if "tier" not in data:
+            raise ValueError("Give a tier: star, 1, 0, -1 or blocked")
+        k = rank.parse(data["tier"])
+        until = time.time() + rank.STAR_DAYS * 86400 if k == rank.STAR else None
+        old = {rank.STAR: 1, 1: 1, 0: 2, -1: 3, rank.BLOCKED: 5}[k]
+        with self._conn() as c:
+            if c.execute("UPDATE track_stats SET rank = ?, star_until = ?, skip_score = ?, is_blacklisted = ?, tier = ? "
+                         "WHERE telegram_msg_id = ?",
+                         (k, until, rank.ANCHOR[k], 1 if k == rank.BLOCKED else 0, old, track_id)).rowcount == 0:
+                raise LookupError("That song isn't in the radio's list")
+        print(f"Curator {curator}: track {track_id} -> tier {rank.NAMES[k]}")
+        if self.on_change:
+            self.on_change()
+        return next(t for t in self.list() if t["id"] == track_id)
 
 
 def build_curator_router(stats: ListenerStats, tiers: Tiers, current_user, audience: "Audience" = None, notes=None):
@@ -716,5 +760,31 @@ def build_curator_router(stats: ListenerStats, tiers: Tiers, current_user, audie
         data["posters"] = await asyncio.to_thread(tiers.posters, per)
         data["mostPlayed"] = await asyncio.to_thread(tiers.most_played, audience.reactions_since if audience is not None else None)
         return data
+
+    @router.get("/tracks")
+    async def tracks(user=Depends(curator)):
+        items = await asyncio.to_thread(tiers.list)
+        if audience is not None:
+            per = await asyncio.to_thread(audience.per_song)
+            for t in items:
+                p = per.get(t["id"]) or {}
+                t["saves"] = p.get("saves", 0)
+                t["votes"] = p.get("votes", 0)
+        return {"items": items}
+
+    @router.post("/tracks/{track_id}")
+    async def change(track_id: int, request: Request, user=Depends(curator)):
+        try:
+            data = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Expected JSON") from None
+        if not isinstance(data, dict):
+            raise HTTPException(400, "Expected a JSON object")
+        try:
+            return await asyncio.to_thread(tiers.update, track_id, data, user["username"])
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from None
 
     return router

@@ -17,12 +17,12 @@
 
 </div>
 
-One live station: everyone hears the same song at the same moment, and enough skip votes
+One live station: everyone hears the same song at the same moment, and enough dislikes
 move it along for everyone.
 
 Raadio is a self-hosted internet radio station you run yourself. Songs come from a Telegram
 channel you control, the controller lines them up and levels them, Icecast streams them to
-everyone at once, and listeners vote songs off — no streaming service in the middle, and no
+everyone at once, and listeners dislike songs off — no streaming service in the middle, and no
 account needed to listen.
 
 ![Raadio playing](demo.gif)
@@ -32,7 +32,9 @@ account needed to listen.
 - **Live streaming** in Opus (64k HQ, 32k Saver) and MP3 (128k), with quality switching and
   an automatic drop to Saver on weak connections
 - **Clean sound:** every song is leveled to -14 LUFS (EBU R128) and otherwise left as uploaded
-- **Skip voting** with per-device and per-address limits
+- **Dislikes and likes** with per-device and per-address limits: enough dislikes skip a song,
+  and both move songs between tiers (star, 1, 0, -1, blocked)
+- **Songs blend:** a song that ends on its own crossfades into the next over 5 s
 - **Studio for hosts:** scheduled shows, uploads, and live shows with several hosts
 - **Listener analytics:** busiest hours, people and session lengths per country, with no
   addresses stored
@@ -55,7 +57,7 @@ flowchart LR
     I --> N[Nginx]
     C --> N
     N --> L[Listeners<br/>web player / PWA]
-    L -- skip votes --> N
+    L -- dislikes and likes --> N
 ```
 
 | Layer | Tools |
@@ -66,6 +68,32 @@ flowchart LR
 | Delivery | Nginx, Certbot, Docker Compose |
 | Cloud | Terraform, AWS EC2, CloudWatch alarms |
 | Checks | GitHub Actions: Python, JavaScript, ShellCheck, Nginx, Docker, Terraform |
+
+## Tiers, dislikes and song changes
+
+Every song is in one of five tiers (`controller/rank.py`). Nothing in them is for good:
+
+| Tier | How a song gets there | How often it plays |
+| --- | --- | --- |
+| ★ Star | Many recent likes, pinned in the channel, newly posted, or set by hand. **Lasts two weeks, then the song is tier 1.** | Every round, an extra turn, and the priority slot every few songs |
+| 1 | Liked (score at or below -1.5), or a star whose two weeks are up | Every round |
+| 0 | Where every song starts | 60% of rounds |
+| -1 | Disliked (score 1.5 or more) | 25% of rounds |
+| Blocked | Disliked a lot (score 4), or set by hand. **Stays blocked until someone changes it by hand.** | Never |
+
+Each dislike that skips a song adds 1 to its score, each like takes off 0.25 and each play to the
+end 0.5. About five recent likes make a star. Curators can put any song in any tier from the
+studio's Rotation tile (`POST /api/curator/tracks/{id}` with `{"tier": "star" | 1 | 0 | -1 |
+"blocked"}`); its score then starts at the bottom of that tier.
+
+A dislike is the skip vote: enough of them and the song fades out and the next one starts. The
+vote's reply says when (`lands_at`), and the player plays a tuning sound until then, the same
+with the screen on or off, landing no sooner than 5 s after the press (`SKIP_LANDS_MS` in
+`web/script.js`): measured 5.2 s to full volume in Chrome, Safari and Firefox alike. The player
+feeds the stream in itself through Media Source, repackaging the Ogg Opus as WebM for Chrome and
+Firefox (`OggToWebm`, no re-encoding), so it can land a skip as soon as it chooses. A song that ends on its own blends into the next: the last 5 s of one and the
+first 5 s of the next are cut, and the two overlap for 5 s (`BLEND` in the controller; songs
+under 30 s play whole).
 
 ## Run it
 

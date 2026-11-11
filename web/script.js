@@ -27,6 +27,9 @@
     STREAM_MP3: "/radio.mp3",
     STREAM_MP3_LITE: "/radio-lite.mp3",
     SKIP_PATH: "/skip",
+    // a skip is heard (the new song) never sooner than this after the press, screen on or
+    // off, in every browser: later only when the stream can't be there safely yet
+    SKIP_LANDS_MS: 5000,
     // The controller keeps one connection open through track changes, so the player
     // must not reconnect after a skip. Set to false only with the old per-track controller.
     CONTINUOUS_STREAM: true,
@@ -316,9 +319,9 @@
 
     [A, B].forEach(function (el) {
       // (when this stream's data started arriving, and how big a burst came with it: see lag())
-      el.addEventListener("loadstart", function () { el._t0 = 0; });
+      el.addEventListener("loadstart", function () { if (!el._feed) el._t0 = 0; });
       el.addEventListener("loadedmetadata", function () {
-        if (!/\/radio/.test(el.src)) return;
+        if (el._feed || !/\/radio/.test(el.src)) return;              // (fed in: see feed)
         // when Icecast sent the burst: just after we asked for it (on a slow line the burst
         // takes a while to arrive, and its first bytes alone made this up to 1 s late)
         var nowS = Date.now() / 1000;
@@ -330,7 +333,7 @@
       });
       // where its clock starts: 0, or (Chrome, Opus) the encoder's clock at the burst's start
       el.addEventListener("loadeddata", function () {
-        if (!el._t0) return;
+        if (!el._t0 || el._feed) return;
         el._ct0 = el.currentTime || 0;
         if (el._ogg && sideClock === null) sideClock = !(el._ct0 > 1);   // (on the encoder's clock: no need)
       });
@@ -442,6 +445,7 @@
     }
 
     function release(el) {
+      if (el._feed) { el._feed.stop(); el._feed = null; }
       el._g0 = null;                   // (its side clock was for the stream it had: see openStream)
       try { el.pause(); } catch (e) { /* ignore */ }
       el.removeAttribute("src");
@@ -525,7 +529,9 @@
       return undefined;
     }
     function openStream(el, url) {
+      if (el._feed) { el._feed.stop(); el._feed = null; }
       el._req = Date.now() / 1000; el._g0 = null;
+      if (useMSE && /\.opus/.test(url)) { feed(el, url); return; }
       el.src = url;
       if (sideClock === false || !/\.opus/.test(url) || !window.fetch || !window.AbortController) return;
       var src = el.src, ctrl = new AbortController(), buf = new Uint8Array(0), over = false;
@@ -554,6 +560,194 @@
       }, function () { done(null); });
     }
 
+    // ---- Ogg Opus -> WebM, for Media Source in browsers that only take WebM (Chrome, Firefox) ----
+    // The station's Opus stream is Ogg; Chrome's and Firefox's Media Source take Opus only in
+    // WebM. Each Ogg page's packets become one WebM cluster (no re-encoding: the same Opus
+    // packets), timed from the first audio page firstPage() reads the clock from, so the feed's
+    // clock (timestampOffset = that page's moment) holds just as with Ogg in Safari.
+    function OggToWebm() {
+      var buf = new Uint8Array(0), started = false, part = null, samples = 0;
+      function vint(n) {                                  // EBML size, always 8 bytes (valid, simple)
+        var b = new Uint8Array(8); b[0] = 1;
+        for (var k = 7; k >= 1; k--) { b[k] = n & 255; n = Math.floor(n / 256); }
+        return b;
+      }
+      function cat(list) {
+        var n = 0, k; for (k = 0; k < list.length; k++) n += list[k].length;
+        var o = new Uint8Array(n), at = 0;
+        for (k = 0; k < list.length; k++) { o.set(list[k], at); at += list[k].length; }
+        return o;
+      }
+      function el(id, body) { return cat([new Uint8Array(id), vint(body.length), body]); }
+      function uint(id, v) {
+        var b = []; do { b.unshift(v & 255); v = Math.floor(v / 256); } while (v > 0);
+        return el(id, new Uint8Array(b));
+      }
+      function str(id, t) { var b = new Uint8Array(t.length); for (var k = 0; k < t.length; k++) b[k] = t.charCodeAt(k); return el(id, b); }
+      function flt(id, v) { var b = new Uint8Array(8); new DataView(b.buffer).setFloat64(0, v); return el(id, b); }
+      function init(head) {                                // EBML header, Segment (size unknown), Info, Tracks
+        var ch = head.length > 9 ? head[9] : 2;
+        return cat([
+          el([0x1A, 0x45, 0xDF, 0xA3], cat([uint([0x42, 0x86], 1), uint([0x42, 0xF7], 1), uint([0x42, 0xF2], 4), uint([0x42, 0xF3], 8),
+                                            str([0x42, 0x82], "webm"), uint([0x42, 0x87], 4), uint([0x42, 0x85], 2)])),
+          new Uint8Array([0x18, 0x53, 0x80, 0x67, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+          el([0x15, 0x49, 0xA9, 0x66], cat([uint([0x2A, 0xD7, 0xB1], 1000000), str([0x4D, 0x80], "raadio"), str([0x57, 0x41], "raadio")])),
+          el([0x16, 0x54, 0xAE, 0x6B], el([0xAE], cat([uint([0xD7], 1), uint([0x73, 0xC5], 1), uint([0x83], 2), str([0x86], "A_OPUS"),
+            el([0x63, 0xA2], head), uint([0x56, 0xBB], 80000000), el([0xE1], cat([flt([0xB5], 48000), uint([0x9F], ch)]))])))
+        ]);
+      }
+      function cluster(packets) {                          // one page's packets: [{data, at (samples)}]
+        if (!packets.length) return null;
+        var tc = Math.round(packets[0].at / 48), blocks = [uint([0xE7], tc)];
+        for (var k = 0; k < packets.length; k++) {
+          var rel = Math.round(packets[k].at / 48) - tc;
+          var h = new Uint8Array([0x81, (rel >> 8) & 255, rel & 255, 0x80]);   // track 1, keyframe
+          blocks.push(el([0xA3], cat([h, packets[k].data])));
+        }
+        return el([0x1F, 0x43, 0xB6, 0x75], cat(blocks));
+      }
+      return {
+        // more Ogg bytes in; the WebM bytes they make (an init segment first)
+        push: function (bytes) {
+          var b = new Uint8Array(buf.length + bytes.length); b.set(buf); b.set(bytes, buf.length); buf = b;
+          var i = 0, res = [];
+          while (i + 27 <= buf.length) {
+            if (buf[i] !== 79 || buf[i + 1] !== 103 || buf[i + 2] !== 103 || buf[i + 3] !== 83) { i++; continue; }
+            var n = buf[i + 26], body = i + 27 + n, size = 0, k;
+            if (body > buf.length) break;
+            for (k = 0; k < n; k++) size += buf[i + 27 + k];
+            if (body + size > buf.length) break;
+            var cont = buf[i + 5] & 1, lo = (buf[i + 6] | buf[i + 7] << 8 | buf[i + 8] << 16 | buf[i + 9] << 24) >>> 0;
+            var hi = (buf[i + 10] | buf[i + 11] << 8 | buf[i + 12] << 16 | buf[i + 13] << 24) >>> 0;
+            if (size >= 8 && buf[body] === 79 && buf[body + 4] === 72) {   // "OpusHead"
+              res.push(init(buf.slice(body, body + size)));
+            } else if (!started && (lo || hi) && hi < 0x80000000 && !cont) {
+              started = true;                              // (from the same page as firstPage)
+            }
+            if (started) {
+              var packets = [], o = body, len = 0;
+              if (cont && !part) {                         // (the rest of a packet we never saw the start of)
+                for (k = 0; k < n && buf[i + 27 + k] === 255; k++) o += 255;
+                if (k < n) { o += buf[i + 27 + k]; k++; } else { i = body + size; continue; }
+              } else k = 0;
+              for (; k < n; k++) {
+                len += buf[i + 27 + k];
+                if (buf[i + 27 + k] < 255) {
+                  var d = buf.slice(o, o + len);
+                  if (part) { d = cat([part, d]); part = null; }
+                  if (d.length) { packets.push({ data: d, at: samples }); samples += opusSamples(d, 0, d.length); }
+                  o += len; len = 0;
+                }
+              }
+              if (len) part = part ? cat([part, buf.slice(o, o + len)]) : buf.slice(o, o + len);   // (goes on next page)
+              var c = cluster(packets);
+              if (c) res.push(c);
+            }
+            i = body + size;
+          }
+          buf = buf.slice(i);
+          return res;
+        }
+      };
+    }
+
+    // ---- The stream fed in by the page (Media Source): Safari on a Mac, Chrome, Firefox ----
+    // A browser playing a live stream itself waits for a good deal in hand before it plays
+    // (Safari ~4.5 s; Chrome a whole 32 KB beyond the playhead, ~2 s of MP3, ~4 s of Opus), so a
+    // skip couldn't land sooner. Fed in by the page through Media Source, it plays on with under
+    // a second in hand (measured in Safari: 8 s with 0.6-0.9 s, no stutter), at any speed, and on
+    // the encoder's own clock (the first page's moment set as where the data starts), so skips,
+    // lined-up quality switches and the timeline all work as before, and skips land sooner.
+    // Safari takes the Ogg as it comes; Chrome and Firefox take Opus only in WebM, so the page
+    // repackages it (OggToWebm). Not on iPhone (no Media Source there). ?mse=0 turns it off.
+    var MSE_TYPE = (function () {
+      try {
+        if (!(window.MediaSource && window.fetch && window.ReadableStream && window.AbortController)) return null;
+        if (MediaSource.isTypeSupported('audio/ogg; codecs="opus"')) return 'audio/ogg; codecs="opus"';
+        if (MediaSource.isTypeSupported('audio/webm; codecs="opus"')) return 'audio/webm; codecs="opus"';
+      } catch (e) { /* ignore */ }
+      return null;
+    })();
+    var useMSE = (function () {
+      try {
+        var p = new URLSearchParams(location.search).get("mse");
+        if (p === "0" || p === "1") return p === "1" && !!MSE_TYPE;
+        return !!MSE_TYPE && !(/iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1));
+      } catch (e) { return false; }
+    })();
+    var mseWorked = false;
+    var MSE_NEED = 1.5;              // seconds in hand a skip lands with (Safari plays on with less)
+    var MSE_COMFY = 5;               // ...and how much it builds back up to afterwards (see the watchdog)
+    function feed(el, url) {
+      var ms = new MediaSource(), ctrl = new AbortController(), q = [], sb = null, head = new Uint8Array(0);
+      var remux = /webm/.test(MSE_TYPE) ? OggToWebm() : null;
+      function add(bytes) { if (!remux) { q.push(bytes); return; } var w = remux.push(bytes); for (var k = 0; k < w.length; k++) q.push(w[k]); }
+      var g0 = null, offsetSet = false, started = false;
+      var f = el._feed = { done: false, stopped: false, stop: function () {
+        if (f.stopped) return;
+        f.stopped = true;
+        try { ctrl.abort(); } catch (e) { /* ignore */ }
+        try { URL.revokeObjectURL(f.url); } catch (e) { /* ignore */ }
+      } };
+      function broke() { if (f.stopped || el._feed !== f) return; f.stop(); el.dispatchEvent(new Event("error")); }
+      el._t0 = 0;
+      el.src = f.url = URL.createObjectURL(ms);
+      function pump() {
+        if (f.stopped || !sb || sb.updating || ms.readyState !== "open" || g0 == null) return;
+        var b = el.buffered;
+        try {
+          if (!offsetSet) { sb.timestampOffset = g0; offsetSet = true; }
+          if (!started && b.length) {                                    // (from the burst's start, as streams play)
+            started = true;
+            el.currentTime = el._ct0 = b.start(0);
+          }
+          if (b.length && el.currentTime - b.start(0) > 60) { sb.remove(b.start(0), el.currentTime - 30); return; }   // (old audio out)
+          if (q.length) { sb.appendBuffer(q[0]); q.shift(); }
+        } catch (e) {
+          if (e && e.name === "QuotaExceededError" && b.length && el.currentTime - b.start(0) > 10) {
+            try { sb.remove(b.start(0), el.currentTime - 5); } catch (x) { broke(); }
+            return;
+          }
+          broke();
+        }
+      }
+      ms.addEventListener("sourceopen", function () {
+        if (f.stopped) return;
+        try {
+          sb = ms.addSourceBuffer(MSE_TYPE);
+          sb.mode = "sequence";                                          // (one after another, from g0)
+        } catch (e) { broke(); return; }
+        sb.addEventListener("updateend", pump);
+        sb.addEventListener("error", broke);
+        pump();
+      }, { once: true });
+      fetch(url, { cache: "no-store", signal: ctrl.signal }).then(function (res) {
+        if (!res.ok || !res.body || !res.body.getReader) { broke(); return; }
+        var rd = res.body.getReader();
+        (function more() {
+          rd.read().then(function (r) {
+            if (f.stopped) return;
+            if (r.done) { f.done = true; return; }                       // (the watchdog takes it from there)
+            if (g0 == null) {
+              var b = new Uint8Array(head.length + r.value.length);
+              b.set(head); b.set(r.value, head.length); head = b;
+              var g = firstPage(head);
+              if (g === undefined) { if (head.length > 262144) broke(); else more(); return; }
+              g0 = g; add(head); head = null;
+              // (what loadedmetadata says for a stream the browser fetches itself)
+              var nowS = Date.now() / 1000, info = streamInfo(url);
+              el._t0 = el._req && srv.rtt < 5 ? Math.min(nowS, el._req + srv.rtt / 2) : nowS;
+              el._ogg = true; el._kbit = info.kbit; el._burstBytes = info.bytes; el._burst = info.burst;
+              el._edge0 = edgeOf(el); el._ct0 = g0;
+            } else add(r.value);
+            el.dispatchEvent(new Event("progress"));
+            pump();
+            more();
+          }, function () { if (!f.stopped) f.done = true; });
+        })();
+      }, broke);
+    }
+
     // How far behind this stream's newest audio the playhead is: what has arrived here and
     // not been played yet (seconds), or -1 if unknown
     function lag(el) {
@@ -567,6 +761,7 @@
     // ~4 s of Opus HQ (more in its quiet parts), ~8 s of Saver. Skips landing with less
     // stuttered 2-3 s into the new song.
     function safeLag(el) {
+      if (el && el._feed) return MSE_NEED;
       if (!el || !el._kbit) return 3;
       var bps = el._kbit * 125;                                       // bytes per second
       if (onClock(el)) {                                              // (Opus: what it really is now)
@@ -629,7 +824,7 @@
       el.preload = "auto";
       el.volume = 1;
       openStream(el, streamUrl());
-      try { el.load(); } catch (e) { /* ignore */ }
+      if (!el._feed) { try { el.load(); } catch (e) { /* ignore */ } }
       warmEl = el; warmAt = Date.now();
       clearTimeout(warmTimer);
       warmTimer = setTimeout(function () {           // pressed but never tapped (e.g. a scroll)
@@ -680,6 +875,8 @@
           emit("quality", { q: quality, fallback: true });
         }
         // Opus never played on this device and keeps failing: fall back to MP3 for good
+        // Fed in and never worked here: let the browser fetch the stream itself again
+        if (useMSE && !mseWorked && n + 1 >= 3) useMSE = false;
         if (useOpus && !opusWorked && n + 1 >= 3) {
           useOpus = false;
           emit("codec", "mp3");
@@ -707,7 +904,7 @@
       }
       el.addEventListener("canplay", ok);
       el.addEventListener("error", bad);
-      if (!warmed) el.load();
+      if (!warmed && !el._feed) el.load();
       else if (el.error) bad();
       else if (el.readyState >= 3) ok();             // already had enough while the finger was down
     }
@@ -790,6 +987,7 @@
         if (weak.low && !everPlayed) weak.downAt = Date.now();     // (started low: steady time counts from here)
         playedHere = true; everPlayed = true;
         if (useOpus && !opusWorked) { opusWorked = true; emit("codec", "opus"); }
+        if (el._feed) mseWorked = true;
         if (lite()) liteWorked = true;
         resetWatch();
         stopKeep();
@@ -849,7 +1047,7 @@
       // then jumped the music a few seconds ahead, which sounded like the song cutting off.)
       var be = bufferedEnd(cur);
       if (be > lastBufEnd + 0.05) { lastBufEnd = be; lastGrow = now; }
-      if (cur.networkState === 1 /* NETWORK_IDLE */ && now - lastGrow > 4000 && ahead(cur) < 2.5) connect("source-closed");
+      if ((cur._feed ? cur._feed.done : cur.networkState === 1 /* NETWORK_IDLE */) && now - lastGrow > 4000 && ahead(cur) < 2.5) connect("source-closed");
       // How far behind live we are: what's buffered but not played yet. Chrome updates the
       // buffered range in steps, so smooth it; ignore nonsense from browsers that report none.
       var a = lag(cur);
@@ -1522,7 +1720,16 @@
     return {
       begin: begin,
       // landed on the skip's moment: the station's own tuning sound takes over from here
-      land: function () { var s = (Date.now() - t0) / 1000; end(700); return s; },
+      land: function () {
+        if (!active) return 0;
+        var wait = t0 + CONFIG.SKIP_LANDS_MS - Date.now();
+        if (wait > 30) {                                 // (not before its time: the tuning sound plays on)
+          clearTimeout(guard);
+          guard = setTimeout(function () { end(700); }, wait);
+          return CONFIG.SKIP_LANDS_MS / 1000;
+        }
+        var s = (Date.now() - t0) / 1000; end(700); return s;
+      },
       // the vote didn't skip after all: straight back to the song
       cancel: function () { end(150); },
       active: function () { return active; }
@@ -1882,6 +2089,7 @@
   var voteTimer = 0;
   var nowPlaying = { poll: function () {} };
   var skipping = 0;                      // a skip we caused, until the new song's start is known
+  var landedEarly = 0;                   // ...or landed already, on the moment the vote's reply gave
   var voteState = { votes: 0, needed: 2 };   // from the last now-playing
   var nextUp = null;                         // the song lined up next, once the server has it
 
@@ -1933,13 +2141,13 @@
   function voteSkip(source) {
     if (voting) return;
     if (Date.now() - lastSkipAt < SKIP_COOLDOWN_MS) { setStatus("Skipping…"); return; }
-    if (!engine.isOn()) { setStatus("Press play to vote"); return; }
-    if (voted) { setStatus("You voted — waiting for one more listener"); return; }
+    if (!engine.isOn()) { setStatus("Press play to dislike"); return; }
+    if (voted) { setStatus("You disliked it — waiting for one more listener"); return; }
     voting = true;
     // answer the tap at once; the server's reply follows in a moment
     ui.skipBtn.classList.add("is-busy");
     ui.skipBtn.setAttribute("aria-pressed", "true");
-    setStatus("Vote sent…");
+    setStatus("Dislike sent…");
     // This vote will surely skip (alone on the station, or the last one needed): tune away
     // from the old song on the tap itself instead of after the server's answer
     var myWeight = 1;
@@ -1960,7 +2168,7 @@
     }
 
     tryNext().then(function (data) {
-      setStatus(data.message || "Vote sent");
+      setStatus(data.message || "Dislike sent");
       if (!data.skipped && sure) skipFx.cancel();   // it didn't go through after all
       if (data.skipped) {
         lastSkipAt = Date.now();
@@ -1973,10 +2181,19 @@
           // tuning sound now, and lock on to the next song the moment it arrives here.
           if (!sure) skipFx.begin();
           setStatus("Skipping — tuning in…");
-          // ask for the new song's exact start time straight away (and a few more times)
-          skipping = Date.now();
-          [300, 900, 1600, 2600, 4000].forEach(function (ms) { setTimeout(function () { if (skipping) nowPlaying.poll(); }, ms); });
-          setTimeout(function () { skipping = 0; }, 6000);
+          // The reply says where the skip lands (the next song, right after the old one's fade):
+          // run through the tail to there now instead of waiting for /now-playing to show it
+          var landsAt = typeof data.lands_at === "number" && data.lands_at > 0 ? data.lands_at : 0;
+          if (landsAt) {
+            skipping = 0; landedEarly = Date.now();
+            engine.rush(engine.toDevice(landsAt), function () { skipFx.land(); });
+            [2500, 4500].forEach(function (ms) { setTimeout(function () { nowPlaying.poll(); }, ms); });
+          } else {
+            // (an older server: ask for the new song's exact start time straight away, and a few more times)
+            skipping = Date.now();
+            [300, 900, 1600, 2600, 4000].forEach(function (ms) { setTimeout(function () { if (skipping) nowPlaying.poll(); }, ms); });
+            setTimeout(function () { skipping = 0; }, 6000);
+          }
         }
       }
       else if (data.status === "success" || data.status === "ignored") markVoted(data.message);
@@ -1985,7 +2202,7 @@
       resetVote();
       if (sure) skipFx.cancel();
       setStatus(navigator.onLine ? "Skip server unreachable" : "You're offline");
-      log.add("error", "Skip vote failed" + (source ? " (" + source + ")" : ""));
+      log.add("error", "Dislike failed" + (source ? " (" + source + ")" : ""));
     }).then(function () {
       voting = false;
       ui.skipBtn.classList.remove("is-busy");
@@ -2405,8 +2622,8 @@
       intro: "یک ایستگاه زنده. همه یک آهنگ را می‌شنوند و شنونده‌ها تصمیم می‌گیرند چه بماند.",
       entries: [
         ["پخش", "دکمه‌ی بزرگ را بزنید. زنده است، مثل رادیو."],
-        ["رأی برای رد کردن", "انگشت رو به پایین. با رأی کافی، آهنگ برای همه رد می‌شود."],
-        ["روی آنتن نگهش دارید", "انگشت رو به بالا یک رأیِ رد را پس می‌گیرد."],
+        ["نپسندیدن", "انگشت رو به پایین. با نپسندیدنِ کافی، آهنگ برای همه رد می‌شود."],
+        ["روی آنتن نگهش دارید", "انگشت رو به بالا یک نپسندیدن را پس می‌گیرد."],
         ["کیفیت بالا یا کم‌مصرف", "HQ برای صدای کامل، کم‌مصرف برای مصرف کمتر. با اتصال ضعیف خودش کم‌مصرف می‌شود و وقتی پایدار شد برمی‌گردد."],
         ["برای بعد نگهش دارید", "دکمه‌ی پخش را ۳ ثانیه نگه دارید تا پخش روی گوشی ذخیره شود (سه ساعت آخر). اگر اتصال قطع شود، از همان پخش می‌شود. برای توقف دوباره نگه دارید."],
         ["یک فلامینگو بگیرید", "روی فلامینگویی که می‌نشیند بزنید و یادداشتی برای آسمان به آن بدهید."],
@@ -2431,7 +2648,7 @@
       },
       alt: {
         hero: "رادیو آنلاین فارسی رادیو: یک رادیوی قدیمی با هدفون، صفحه‌ی گرامافون و یادداشت‌های موسیقی",
-        entries: ["دکمه‌ی پخش رادیو آنلاین فارسی", "رأی برای رد کردن آهنگ در رادیو آنلاین", "نگه داشتن آهنگ محبوب روی آنتن رادیو",
+        entries: ["دکمه‌ی پخش رادیو آنلاین فارسی", "نپسندیدن و رد کردن آهنگ در رادیو آنلاین", "نگه داشتن آهنگ محبوب روی آنتن رادیو",
                   "کیفیت بالا یا کم‌مصرف برای رادیو آنلاین فارسی", "ذخیره‌ی پخش زنده‌ی رادیو برای بعد", "فلامینگوی رادیو آنلاین با یادداشت برای آسمان",
                   "ربات تلگرام رادیو آنلاین فارسی برای پیشنهاد آهنگ", "در استودیوی رادیو برای مجری‌ها"]
       },
@@ -2471,7 +2688,7 @@
       },
       alt: {
         hero: "Raadio Persian radio online: a vintage radio with headphones, a vinyl record and music notes",
-        entries: ["Play button of the free Persian radio online", "Vote to skip a song on the live radio", "Keep a favourite song on air on Raadio",
+        entries: ["Play button of the free Persian radio online", "Dislike a song to skip it on the live radio", "Keep a favourite song on air on Raadio",
                   "HQ or data saver for Persian radio online", "Save the live radio stream for later", "Raadio flamingo carrying a note for the sky",
                   "The studio door on the radio, for hosts"]
       },
@@ -2576,7 +2793,8 @@
       "Listener-voted rotation": "چرخه‌ی پخش با رأی شنونده‌ها", "Listeners": "شنونده‌ها", "Listening now": "در حال شنیدن",
       "Live": "زنده", "Live mic": "میکروفون زنده", "Live on-air studio": "استودیوی پخش زنده", "Live station chat": "گفتگوی زنده‌ی ایستگاه",
       "Message to the chat": "پیام به گفتگو", "Month": "ماه", "Most downloaded": "بیشترین دانلود", "Most played": "بیشترین پخش",
-      "Most skip votes": "بیشترین رأی رد", "Most skipped": "بیشترین رد شده", "My studio": "استودیوی من", "New note": "یادداشت تازه",
+      "Most dislikes": "بیشترین نپسندیدن", "A–Z": "الفبا", "Every song starts at 0. Dislikes move it down, likes up; blocked is off the air until changed by hand. A star (many likes, pinned or newly posted, or the ★ button) plays most for two weeks, then it's tier 1.":
+        "هر آهنگ از رده‌ی ۰ شروع می‌کند. نپسندیدن پایینش می‌برد و پسندیدن بالا؛ مسدود تا تغییر دستی پخش نمی‌شود. ستاره (پسندِ زیاد، سنجاق یا تازه در کانال، یا دکمه‌ی ★) دو هفته بیشترین پخش را دارد و بعد رده‌ی ۱ می‌شود.", "Most skipped": "بیشترین رد شده", "My studio": "استودیوی من", "New note": "یادداشت تازه",
       "Not now": "الان نه", "Notes with these words (or ones starting with them) can't be sent. Tap a word to allow it again.":
         "یادداشت‌هایی که این کلمه‌ها (یا کلمه‌هایی که با آن‌ها شروع می‌شوند) را دارند فرستاده نمی‌شوند. برای آزاد کردن، روی کلمه بزنید.",
       "Now playing on air": "در حال پخش", "Off air": "خاموش", "On air": "روی آنتن", "Online": "آنلاین", "Play": "پخش",
@@ -2592,10 +2810,10 @@
       "This week vs last": "این هفته در برابر هفته‌ی قبل",
       "Time range": "بازه‌ی زمانی", "Typical week": "یک هفته‌ی معمول", "Upload": "بارگذاری", "Use your microphone": "از میکروفون خود استفاده کنید",
       "Week": "هفته", "Busiest times": "شلوغ‌ترین زمان‌ها",
-      "Skip votes": "رأی‌های رد", "Liked songs": "آهنگ‌های پسندیده", "Play or pause the radio": "پخش یا توقف رادیو", "likes": "پسند", "Songs in each tier": "آهنگ‌ها در هر رده", "average": "میانگین", "votes": "رأی", "notes": "یادداشت",
+      "Dislikes": "نپسندیدن‌ها", "Liked songs": "آهنگ‌های پسندیده", "Play or pause the radio": "پخش یا توقف رادیو", "likes": "پسند", "Songs in each tier": "آهنگ‌ها در هر رده", "average": "میانگین", "votes": "رأی", "notes": "یادداشت",
       // the server status log, empty lists and states
       "Studio ready": "استودیو آماده است", "Opus stream": "پخش Opus", "Back online": "دوباره آنلاین", "Back to live": "برگشت به پخش زنده",
-      "Device went offline": "دستگاه آفلاین شد", "Removed from the schedule": "از برنامه حذف شد", "Skip vote failed": "رأی رد ثبت نشد",
+      "Device went offline": "دستگاه آفلاین شد", "Removed from the schedule": "از برنامه حذف شد", "Dislike failed": "نپسندیدن ثبت نشد",
       "That file isn't audio": "این فایل صوتی نیست", "Those aren't audio files": "این‌ها فایل صوتی نیستند", "The stream is ended": "پخش زنده تمام شد",
       "Track skipped by listeners": "آهنگ با رأی شنونده‌ها رد شد", "Microphone access was blocked": "دسترسی به میکروفون مسدود شد",
       "Name needs at least 2 characters": "نام باید دست‌کم 2 حرف باشد", "Stream not answering yet, still trying": "پخش هنوز جواب نمی‌دهد؛ دوباره امتحان می‌کنیم",
@@ -2622,7 +2840,7 @@
       "This device can't make a high-quality recording; the on-air version will still be saved": "این دستگاه نمی‌تواند ضبط باکیفیت بسازد؛ نسخه‌ی پخش‌شده ذخیره می‌شود",
       "High quality": "کیفیت بالا", "On-air version": "نسخه‌ی پخش‌شده", "Mixing the high-quality file…": "در حال ساخت فایل باکیفیت…",
       "You're live": "شما زنده هستید", "Your mic is off while the song plays.": "تا آهنگ پخش می‌شود میکروفون شما خاموش است.",
-      "downloads": "دانلود", "made by Hootan": "ساخته‌ی هوتن", "plays": "پخش", "skip votes": "رأی رد", "skipped": "رد شده", "tuning": "شنونده"
+      "downloads": "دانلود", "made by Hootan": "ساخته‌ی هوتن", "plays": "پخش", "dislikes": "نپسندیدن", "skipped": "رد شده", "tuning": "شنونده"
     };
     var PATTERNS = [[/^Signed in as (.+)$/, "واردشده با نام $1"], [/^Connected via (.+)$/, "وصل از طریق $1"],
       [/^Switched to (.+)$/, "تغییر به $1"], [/^Reconnecting \((.+)\)$/, "اتصال دوباره ($1)"], [/^Lite mode on \((.+)\)$/, "حالت سبک روشن شد ($1)"],
@@ -2779,7 +2997,7 @@
           at(176, 76, '<path d="M0 0 L8 5 L0 10 M8 0 L16 5 L8 10" class="gp-line gpa-pop" style="--at:0.62"/>') +
           finger(KEY.dis[0] + 2, KEY.dis[1] + 2, "gpa-tap3"),
         // keep it on air: thumbs-up takes a skip vote back, hearts rise
-        radio({ screen: lcd("2 SKIP VOTES", "gpa-off", 0.3) + lcd("1 SKIP VOTE", "gpa-on", 0.3) }) +
+        radio({ screen: lcd("2 DISLIKES", "gpa-off", 0.3) + lcd("1 DISLIKE", "gpa-on", 0.3) }) +
           at(150, 98, '<g class="gpa-rise" style="--at:0.24">' + HEART + "</g>") + at(162, 92, '<g class="gpa-rise" style="--at:0.32">' + HEART + "</g>") + at(140, 88, '<g class="gpa-rise" style="--at:0.4">' + HEART + "</g>") +
           finger(KEY.like[0] + 2, KEY.like[1] + 2, "gpa-tap", 0.2),
         // HQ or Saver: the signal falls, HQ turns Saver, then back
@@ -2817,8 +3035,8 @@
     var MORE = {
       en: [
         ["One tap starts the live stream; tap again to stop.", "Everyone hears the same song at the same moment, like a real radio.", "The display says On air while you're connected, and Tuning while it catches up."],
-        ["Thumbs-down adds your vote to skip the song for everyone.", "When enough listeners vote, the song ends early and the next one starts.", "Songs that get skipped a lot come round less often."],
-        ["Thumbs-up takes back a skip vote.", "It's how listeners shape the station together."],
+        ["Thumbs-down is your dislike: it counts toward skipping the song for everyone.", "When enough listeners dislike it, the song ends early and the next one starts.", "Disliked songs move down a tier and come round less often; disliked a lot, they're blocked."],
+        ["Thumbs-up takes back a dislike.", "It's how listeners shape the station together."],
         ["HQ plays the full-quality sound.", "Saver uses much less data, good on mobile data.", "On a weak connection it drops to Saver by itself, and goes back to HQ once it's steady."],
         ["While it plays, hold Play for 3 seconds: the display shows Saving.", "The last 3 hours stay on your phone.", "If the connection drops, the display shows Tape and it plays on from what it saved, then goes back to live by itself. Hold again to stop."],
         ["Now and then a flamingo flies by and lands on the radio.", "Tap it and write a short note: it carries it off and writes it in the sky for everyone listening.", "Notes are checked before they fly."],
@@ -2826,8 +3044,8 @@
       ],
       fa: [
         ["با یک ضربه پخش زنده شروع می‌شود؛ دوباره بزنید تا متوقف شود.", "همه در یک لحظه یک آهنگ را می‌شنوند، مثل یک رادیوی واقعی.", "تا وقتی وصل هستید نمایشگر «روی آنتن» را نشان می‌دهد."],
-        ["انگشت رو به پایین رأی شما را برای رد کردن آهنگ ثبت می‌کند.", "وقتی رأی‌ها کافی شود، آهنگ زودتر تمام می‌شود و آهنگ بعدی شروع می‌شود.", "آهنگ‌هایی که زیاد رد می‌شوند کمتر پخش می‌شوند."],
-        ["انگشت رو به بالا یک رأیِ رد را پس می‌گیرد.", "شنونده‌ها این‌طور با هم ایستگاه را می‌سازند."],
+        ["انگشت رو به پایین یعنی نپسندیدن: برای رد کردن آهنگ برای همه حساب می‌شود.", "وقتی نپسندیدن‌ها کافی شود، آهنگ زودتر تمام می‌شود و آهنگ بعدی شروع می‌شود.", "آهنگ‌هایی که زیاد رد می‌شوند کمتر پخش می‌شوند."],
+        ["انگشت رو به بالا یک نپسندیدن را پس می‌گیرد.", "شنونده‌ها این‌طور با هم ایستگاه را می‌سازند."],
         ["HQ صدا را با کیفیت کامل پخش می‌کند.", "کم‌مصرف داده‌ی خیلی کمتری مصرف می‌کند؛ برای اینترنت موبایل مناسب است.", "با اتصال ضعیف خودش کم‌مصرف می‌شود و وقتی اتصال پایدار شد به HQ برمی‌گردد."],
         ["هنگام پخش، دکمه‌ی پخش را ۳ ثانیه نگه دارید؛ نمایشگر «در حال ذخیره» را نشان می‌دهد.", "سه ساعت آخر روی گوشی‌تان می‌ماند.", "اگر اتصال قطع شود، نمایشگر «نوار» را نشان می‌دهد و از همان ذخیره پخش می‌کند، بعد خودش به پخش زنده برمی‌گردد. برای توقف دوباره نگه دارید."],
         ["گاهی فلامینگویی می‌آید و روی رادیو می‌نشیند.", "رویش بزنید و یادداشت کوتاهی بنویسید؛ آن را می‌برد و برای همه‌ی شنونده‌ها در آسمان می‌نویسد.", "یادداشت‌ها پیش از پرواز بررسی می‌شوند."],
@@ -3435,7 +3653,7 @@
         setStatus(data.message || "Liked");
         if (data.liked) {
           likedId = t.id;
-          log.add("ok", data.rescued ? "Thumbs-up: took back a skip vote" : "Thumbs-up");
+          log.add("ok", data.rescued ? "Thumbs-up: took back a dislike" : "Thumbs-up");
           nowPlaying.poll();                       // (the vote count may have gone down)
         } else { btn.classList.remove("is-liked"); btn.setAttribute("aria-pressed", "false"); }
       }).catch(function () {
@@ -3488,6 +3706,14 @@
             // The server has moved on, but this listener still hears the previous song for a
             // few seconds: show the new title when the new song actually starts here.
             var wait = d.started_at + engine.latency() - d.now;
+            if (landedEarly && Date.now() - landedEarly < 20000) {
+              // (our skip already landed: just show the new title when the song starts here)
+              landedEarly = 0;
+              pendingId = d.id;
+              clearTimeout(pendingTimer);
+              pendingTimer = setTimeout(function () { pendingId = null; show(d); }, Math.min(Math.max(0, wait), 20) * 1000);
+              return;
+            }
             if (skipping) {                // our skip: run through the old song's (muted) tail and land on the new one
               skipping = 0;
               // (the fallback, should the fast-forward never finish: as long as it can take)
@@ -5863,8 +6089,8 @@
 
   var curator = (function () {
     var root = $("curator");
-    var range = "week", data = null, open = false;
-    var livePoll = 0, statsPoll = 0, statsAt = 0, warm = null, statsKey = "";
+    var range = "week", data = null, open = false, tracks = [];
+    var livePoll = 0, statsPoll = 0, statsAt = 0, tracksAt = 0, warm = null, statsKey = "", tracksKey = "";
     var openTile = null;
     var tiles = Array.prototype.slice.call(root.querySelectorAll(".an-tile"));
     function tile(name) { return root.querySelector('.an-tile[data-tile="' + name + '"]'); }
@@ -6142,7 +6368,7 @@
       more.replaceChildren();
       var tbl = node("div", "an-table");
       var head = node("div", "an-tr an-tr--head");
-      [tr("Country", "کشور"), tr("Listening", "شنیدن"), tr("Skip votes", "رأی رد"), tr("Downloads", "دانلود")].forEach(function (h) { head.appendChild(node("span", "", h)); });
+      [tr("Country", "کشور"), tr("Listening", "شنیدن"), tr("Dislikes", "نپسندیدن"), tr("Downloads", "دانلود")].forEach(function (h) { head.appendChild(node("span", "", h)); });
       tbl.appendChild(head);
       cs.forEach(function (c) {
         var r = node("div", "an-tr");
@@ -6305,7 +6531,7 @@
             why.appendChild(node("span", "an-why an-why--" + r, whyWord(r) + " " + s.why[r] + "×"));
           });
           li.appendChild(why);
-          var bits = [s.likes + tr(s.likes === 1 ? " like" : " likes", " پسند"), s.votes + tr(s.votes === 1 ? " skip vote" : " skip votes", " رأی رد")];
+          var bits = [s.likes + tr(s.likes === 1 ? " like" : " likes", " پسند"), s.votes + tr(s.votes === 1 ? " dislike" : " dislikes", " نپسندیدن")];
           if (s.posted) bits.push(tr("added ", "افزوده ") + fmtL(new Date(s.posted * 1000), { month: "short", day: "numeric", year: "numeric" }));
           li.appendChild(node("small", "an-play-info", bits.join(" · ")));
         }
@@ -6330,8 +6556,8 @@
       more.appendChild(node("p", "an-note", (day
         ? tr("Plays and their reasons have been recorded since " + day + "; nothing earlier exists, so the lists fill up as songs play.", "پخش‌ها و دلیلشان از " + day + " ثبت می‌شود و پیش از آن داده‌ای نیست.")
         : tr("Plays and their reasons are recorded from this update on.", "پخش‌ها و دلیلشان از همین به‌روزرسانی ثبت می‌شود."))));
-      more.appendChild(node("p", "an-note", tr("Why: each play shows the slot that picked it. Random rotation is a shuffle of the whole channel. Likes never pick a song: they only cancel skip votes, which keeps it from dropping to a tier that plays less, so they're shown beside the reasons.",
-        "دلیل: هر پخش نشان می‌دهد کدام نوبت آن را انتخاب کرده. چرخش تصادفی یعنی بُر زدن همه‌ی کانال. پسند هرگز آهنگی را انتخاب نمی‌کند: فقط رأی رد را خنثی می‌کند تا آهنگ به رده‌ی کم‌پخش‌تر نیفتد، برای همین کنار دلیل‌ها نشان داده می‌شود.")));
+      more.appendChild(node("p", "an-note", tr("Why: each play shows the slot that picked it. Random rotation is a shuffle of the whole channel. Likes never pick a song: they only cancel dislikes, which keeps it from dropping to a tier that plays less, so they're shown beside the reasons.",
+        "دلیل: هر پخش نشان می‌دهد کدام نوبت آن را انتخاب کرده. چرخش تصادفی یعنی بُر زدن همه‌ی کانال. پسند هرگز آهنگی را انتخاب نمی‌کند: فقط نپسندیدن را خنثی می‌کند تا آهنگ به رده‌ی کم‌پخش‌تر نیفتد، برای همین کنار دلیل‌ها نشان داده می‌شود.")));
       if (mp.allTime.length) {
         more.appendChild(node("h3", "an-h", tr("All time: top 10", "همه‌ی زمان‌ها: 10 تای اول")));
         more.appendChild(playedList(mp.allTime));
@@ -6487,8 +6713,8 @@
       setText($("an-skips"), String(votes));
       var starts = aud.buckets || [];
       columns($("an-skips-chart"), (aud.votes.series || []).map(function (v, i) {
-        return { v: v, label: starts[i] ? bucketLabel(starts[i], i, i === 0) : "", tip: (starts[i] ? bucketName(starts[i]) + ": " : "") + v + tr(v === 1 ? " skip vote" : " skip votes", " رأی رد") };
-      }), { label: tr("Skip votes ", "رأی‌های رد ") + rangeWord(), noAxis: true });
+        return { v: v, label: starts[i] ? bucketLabel(starts[i], i, i === 0) : "", tip: (starts[i] ? bucketName(starts[i]) + ": " : "") + v + tr(v === 1 ? " skip vote" : " skip votes", " نپسندیدن") };
+      }), { label: tr("Dislikes ", "نپسندیدن‌ها ") + rangeWord(), noAxis: true });
       var by = aud.countries.filter(function (c) { return c.votes > 0; }).sort(function (a, b) { return b.votes - a.votes; });
       var parts = by.slice(0, 3).map(function (c) { return { cc: c.cc, n: c.votes }; });
       var rest = by.slice(3).reduce(function (s, c) { return s + c.votes; }, 0);
@@ -6496,11 +6722,11 @@
       setText($("an-skips-sub"), skipped + tr(skipped === 1 ? " song skipped" : " songs skipped", " آهنگ رد شد"));
       var more = $("an-skips-more");
       more.replaceChildren();
-      more.appendChild(node("h3", "an-h", tr("Skip votes by country", "رأی رد به تفکیک کشور")));
+      more.appendChild(node("h3", "an-h", tr("Dislikes by country", "نپسندیدن به تفکیک کشور")));
       var bc = node("div", "an-chart an-chart--list");
       more.appendChild(bc);
-      hbars(bc, parts.map(function (p) { return { name: p.cc ? flag(p.cc) + " " + regionName(p.cc) : tr("Others", "بقیه"), v: p.n, text: String(p.n) }; }), tr("Skip votes by country", "رأی رد به تفکیک کشور"));
-      more.appendChild(songList(tr("Most skip votes", "بیشترین رأی رد"), aud.votes.top, tr("votes", "رأی")));
+      hbars(bc, parts.map(function (p) { return { name: p.cc ? flag(p.cc) + " " + regionName(p.cc) : tr("Others", "بقیه"), v: p.n, text: String(p.n) }; }), tr("Dislikes by country", "نپسندیدن به تفکیک کشور"));
+      more.appendChild(songList(tr("Most dislikes", "بیشترین نپسندیدن"), aud.votes.top, tr("votes", "رأی")));
       more.appendChild(songList(tr("Skipped by listeners", "رد شده توسط شنونده‌ها"), aud.skips.top, "×"));
     }
 
@@ -6515,17 +6741,17 @@
       setText($("an-likes-sub"), L.top.length ? tr("Most liked: ", "محبوب‌ترین: ") + L.top[0].title : tr("No likes yet", "هنوز پسندی نیست"));
       var more = $("an-likes-more");
       more.replaceChildren();
-      more.appendChild(node("h3", "an-h", tr("Likes and skip votes each day", "پسندها و رأی‌های رد در هر روز")));
+      more.appendChild(node("h3", "an-h", tr("Likes and dislikes each day", "پسندها و نپسندیدن‌ها در هر روز")));
       var cmp = node("div", "an-chart an-chart--pair");
       more.appendChild(cmp);
       lines(cmp, (L.series || []).map(function (v, i) { return starts[i] ? bucketLabel(starts[i], i, true) : ""; }), [
         { name: tr("Likes", "پسندها"), tone: "main", values: L.series || [] },
-        { name: tr("Skip votes", "رأی‌های رد"), tone: "ref", values: aud.votes.series || [] }
-      ], tr("Likes and skip votes each day", "پسندها و رأی‌های رد در هر روز"));
+        { name: tr("Dislikes", "نپسندیدن‌ها"), tone: "ref", values: aud.votes.series || [] }
+      ], tr("Likes and dislikes each day", "پسندها و نپسندیدن‌ها در هر روز"));
       var votes = aud.votes.total;
       more.appendChild(node("p", "an-note", L.total + votes
         ? tr(Math.round(L.total / (L.total + votes) * 100) + "% of listeners' reactions " + rangeWord() + " were likes (" + L.total + " likes, " + votes + " skip votes).",
-             Math.round(L.total / (L.total + votes) * 100) + "٪ واکنش‌های شنونده‌ها " + rangeWord() + " پسند بود (" + L.total + " پسند، " + votes + " رأی رد).")
+             Math.round(L.total / (L.total + votes) * 100) + "٪ واکنش‌های شنونده‌ها " + rangeWord() + " پسند بود (" + L.total + " پسند، " + votes + " نپسندیدن).")
         : tr("No reactions yet.", "هنوز واکنشی نیست.")));
       more.appendChild(node("h3", "an-h", tr("Most liked songs", "پسندیده‌ترین آهنگ‌ها")));
       var box = node("div", "an-chart an-chart--list");
@@ -6624,7 +6850,7 @@
           function detail() {
             body.replaceChildren();
             songs(tr("Most liked songs", "پسندیده‌ترین آهنگ‌ها"), p.liked, tr("likes", "پسند"));
-            songs(tr("Most disliked songs", "آهنگ‌های بیشتر ردشده"), p.disliked, tr("skip votes", "رأی رد"));
+            songs(tr("Most disliked songs", "آهنگ‌های بیشتر ردشده"), p.disliked, tr("dislikes", "نپسندیدن"));
             li.querySelector(".an-person-hint").textContent = tr("‹ Back", "بازگشت ›");
           }
           // a tap (or Enter / Space) switches between the summary and the songs
@@ -6770,6 +6996,148 @@
       Array.prototype.forEach.call(root.querySelectorAll(".an-chart"), function (el) { ro.observe(el); });
     }
 
+    /* ---------- tiers ---------- */
+    var TIER_PAGE = 30;
+    // tiers (controller/rank.py): star 2 (two weeks, then 1), 1, 0 where every song starts, -1, blocked -2
+    var TIER_KEYS = [2, 1, 0, -1, -2];
+    var TIER_NAMES = { 2: "★ Star", 1: "Tier 1", 0: "Tier 0", "-1": "Tier −1", "-2": "Blocked" };
+    var TIER_SEND = { 2: "star", 1: "1", 0: "0", "-1": "-1", "-2": "blocked" };
+    var TIER_TONE = { 2: 1, 1: 2, 0: 3, "-1": 4, "-2": 5 };      // (the old tiers' colours: star darkest, blocked gray)
+    function tierName(k) {
+      return k === 2 ? tr("★ Star", "★ ستاره") : k === -2 ? tr("Blocked", "مسدود") : tr("Tier ", "رده‌ی ") + String(k).replace("-", "−");
+    }
+    function loadTracks() {
+      return api.get("/api/curator/tracks").then(function (r) {
+        tracksAt = Date.now();
+        var key = JSON.stringify(r.items || []);
+        if (key === tracksKey) return;
+        tracksKey = key;
+        tracks = r.items || [];
+        renderTiers();
+      })
+        .catch(function (ex) { if (ex.status !== 403) log.add("error", ex.message); });
+    }
+    // The Rotation tile: a summary per tier (closed: one line; open: a breakdown beside the
+    // radar), then the songs, filtered by tier, searched and sorted, each with its numbers
+    var tierFilter = null, shownCap = TIER_PAGE;
+    function ic(name) { return '<svg class="icon" aria-hidden="true"><use href="#i-' + name + '"/></svg>'; }
+    function renderTiers() {
+      var counts = { 2: 0, 1: 0, 0: 0, "-1": 0, "-2": 0 };
+      tracks.forEach(function (t) { counts[t.tier] = (counts[t.tier] || 0) + 1; });
+      var total = tracks.length;
+      setText($("an-tiers-sub"), total ? total.toLocaleString() + tr(" songs · stars play most, for two weeks", " آهنگ · ستاره‌ها دو هفته بیشترین پخش را دارند") : tr("No songs yet", "هنوز آهنگی نیست"));
+
+      // songs in each tier, star (plays most) darkest; blocked in gray
+      columns($("an-tiers-chart"), TIER_KEYS.map(function (k) {
+        return { v: counts[k], label: tierName(k), tone: k === -2 ? "ref" : "t" + TIER_TONE[k],
+                 tip: tierName(k) + (k === 2 ? tr(" (plays most, two weeks)", " (بیشترین پخش، دو هفته)") : "") + ": " + counts[k].toLocaleString() + tr(" songs", " آهنگ") };
+      }), { label: tr("Songs in each tier", "آهنگ‌ها در هر رده"), allLabels: true, valueEach: true });
+
+      // tier chips
+      var chips = document.createDocumentFragment();
+      [null].concat(TIER_KEYS).forEach(function (k) {
+        var c = node("button", "rot-chip");
+        c.type = "button";
+        c.dataset.tier = k === null ? "all" : String(k);
+        c.setAttribute("aria-pressed", String(tierFilter === k));
+        c.appendChild(document.createTextNode(k !== null ? tierName(k) : tr("All", "همه")));
+        c.appendChild(node("b", "", (k !== null ? counts[k] : total).toLocaleString()));
+        chips.appendChild(c);
+      });
+      $("tiers-bar").replaceChildren(chips);
+
+      // the songs
+      var q = $("tiers-search").value.trim().toLowerCase();
+      var sort = $("tiers-sort").value;
+      var items = tracks.filter(function (t) {
+        return (tierFilter === null || t.tier === tierFilter) && (!q || t.title.toLowerCase().indexOf(q) !== -1);
+      });
+      function rate(t) { return t.plays ? t.skips / t.plays : 0; }
+      items.sort(function (x, y) {
+        if (sort === "title") return x.title.localeCompare(y.title);
+        var a2 = sort === "rate" ? rate(x) : (x[sort] || 0), b2 = sort === "rate" ? rate(y) : (y[sort] || 0);
+        return b2 - a2 || x.title.localeCompare(y.title);
+      });
+      var list = document.createDocumentFragment();
+      items.slice(0, q ? items.length : shownCap).forEach(function (t) {
+        var row = node("div", "tier-row");
+        row.dataset.id = String(t.id);
+        var body = node("div", "tier-row-body");
+        var head = node("span", "rot-head");
+        head.appendChild(node("span", "tier-title", t.title));
+        if (tierFilter === null) head.appendChild(node("em", "rot-tier rot-tier--" + TIER_TONE[t.tier], t.tier === 2 || t.tier === -2 ? tierName(t.tier) : tr("T", "ر") + String(t.tier).replace("-", "−")));
+        body.appendChild(head);
+        var st = node("span", "rot-stats");
+        st.innerHTML =
+          "<i title=\"" + tr("Plays", "پخش") + "\">" + ic("play") + (t.plays || 0) + "</i>" +
+          "<i title=\"" + tr("Downloads", "دانلود") + "\">" + ic("download") + (t.saves || 0) + "</i>" +
+          "<i title=\"" + tr("Dislikes", "نپسندیدن‌ها") + "\">" + ic("dislike") + (t.votes || 0) + "</i>" +
+          "<i title=\"" + tr("Times skipped", "دفعات رد") + "\">" + ic("next") + (t.skips || 0) + "</i>";
+        body.appendChild(st);
+        var r = rate(t), rb = node("span", "rot-rate");
+        rb.title = Math.round(r * 100) + tr("% of plays skipped", "٪ پخش‌ها رد شد");
+        rb.appendChild(node("b"));
+        rb.firstChild.style.width = Math.min(100, Math.round(r * 100)) + "%";
+        body.appendChild(rb);
+        row.appendChild(body);
+        var k = t.tier;
+        row.appendChild(tierBtn("up", tr("Move up to ", "بالا ببر به ") + tierName(k + 1), k >= 1));
+        row.appendChild(tierBtn("down", k === -1 ? tr("Block", "مسدود کن") : tr("Move down to ", "پایین ببر به ") + tierName(k - 1), k === -2));
+        var star = tierBtn("star", k === 2 ? tr("A star until ", "ستاره تا ") + new Date(t.starUntil * 1000).toLocaleDateString(studioLang === "fa" ? "fa-IR" : undefined, { day: "numeric", month: "short" }) + tr(". Tap to give it two weeks from today", ". برای دو هفته از امروز بزنید")
+                                       : tr("Make it a star for two weeks", "ستاره کن برای دو هفته"), false);
+        if (k === 2) star.classList.add("is-on");
+        row.appendChild(star);
+        list.appendChild(row);
+      });
+      if (!q && items.length > shownCap) {
+        var more = node("button", "tier-more", tr("Show " + Math.min(TIER_PAGE * 4, items.length - shownCap) + " more of " + items.length.toLocaleString(), Math.min(TIER_PAGE * 4, items.length - shownCap) + " تای دیگر از " + items.length.toLocaleString()));
+        more.type = "button";
+        list.appendChild(more);
+      }
+      if (!items.length) list.appendChild(node("p", "tiers-empty", tracks.length ? tr("No song matches.", "آهنگی پیدا نشد.") : tr("Songs appear here after they've played once.", "آهنگ‌ها بعد از اولین پخش اینجا می‌آیند.")));
+      $("tiers-list").replaceChildren(list);
+    }
+    function tierBtn(kind, label2, disabled) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "tier-btn";
+      b.dataset.act = kind;
+      b.setAttribute("aria-label", label2);
+      b.title = label2;
+      b.disabled = !!disabled;
+      b.innerHTML = '<svg class="icon icon--sm"><use href="#i-' + kind + '"/></svg>';
+      return b;
+    }
+    $("tiers-bar").addEventListener("click", function (e) {
+      var c = e.target.closest(".rot-chip");
+      if (!c) return;
+      tierFilter = c.dataset.tier === "all" ? null : +c.dataset.tier;
+      shownCap = TIER_PAGE;
+      renderTiers();
+    });
+    $("tiers-sort").addEventListener("change", function () { shownCap = TIER_PAGE; renderTiers(); });
+    $("tiers-list").addEventListener("click", function (e) {
+      if (e.target.closest(".tier-more")) { shownCap += TIER_PAGE * 4; renderTiers(); return; }
+      var b = e.target.closest(".tier-btn");
+      if (!b || b.disabled) return;
+      var id = +b.closest(".tier-row").dataset.id;
+      var t = tracks.filter(function (x) { return x.id === id; })[0];
+      if (!t) return;
+      var to = b.dataset.act === "up" ? t.tier + 1 : b.dataset.act === "down" ? t.tier - 1 : 2;
+      var change = { tier: TIER_SEND[to] };
+      b.disabled = true;
+      api.post("/api/curator/tracks/" + id, change).then(function (upd) {
+        // keep this song's listener numbers (the update answer only has the tier fields)
+        tracks = tracks.map(function (x) { return x.id === id ? Object.assign({}, x, upd) : x; });
+        renderTiers();
+        log.add("ok", "“" + upd.title + "” is now " + TIER_NAMES[upd.tier] + (upd.tier === 2 ? " for two weeks" : ""));
+      }).catch(function (ex) {
+        b.disabled = false;
+        log.add("error", ex.message || "Couldn't change the tier");
+      });
+    });
+    $("tiers-search").addEventListener("input", renderTiers);
+
     function opened() {
       placeNotes();
       root.hidden = !isCurator();
@@ -6777,6 +7145,7 @@
       open = true;
       var now = Date.now();
       if (!data || now - statsAt > 60000) loadStats();
+      if (!tracks.length || now - tracksAt > 60000) loadTracks();
       pollLive();
       clearInterval(livePoll); clearInterval(statsPoll);
       livePoll = setInterval(function () { if (!document.hidden) pollLive(); }, 5000);
@@ -6787,11 +7156,11 @@
       if (warm || !isCurator()) return warm;
       root.hidden = false;
       placeNotes();
-      warm = loadStats().catch(function () { warm = null; });
+      warm = Promise.all([loadStats(), loadTracks()]).catch(function () { warm = null; });
       return warm;
     }
     // Called when a flip ends
-    studioLangHooks.push(function () { if (data) renderAll(); });
+    studioLangHooks.push(function () { if (data) renderAll(); if (tracks.length) renderTiers(); });
     function settled() { if (open && data) renderAll(); }   // (drawn to size once the card has turned)
     function closed() {
       open = false;
@@ -6800,7 +7169,7 @@
     function refreshRole() {
       placeNotes();
       root.hidden = !isCurator();
-      if (root.hidden) { closed(); warm = null; statsKey = ""; data = null; }
+      if (root.hidden) { closed(); warm = null; statsKey = tracksKey = ""; data = null; tracks = []; }
     }
     return { opened: opened, closed: closed, refreshRole: refreshRole, prewarm: prewarm, settled: settled };
   })();

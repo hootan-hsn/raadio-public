@@ -10,6 +10,7 @@ Settings come from .env (see .env.example). Run from the repo root:
     python -u controller/radio_controller.py
 """
 import asyncio
+import audioop                       # (3.12 still has it: the live studio mixes with it too)
 import math
 from contextlib import contextmanager
 import os
@@ -141,15 +142,15 @@ VOTE_WINDOW = 90               # seconds a vote stays valid
 # Each device votes on its own, but one internet address can't cast more than this many
 # (stops one person faking a crowd by clearing their browser)
 VOTES_PER_IP = max(1, int(os.getenv("VOTES_PER_IP", "3")))
-SKIP_FADE_SECONDS = 0.35       # short fade-out instead of a hard cut
+SKIP_FADE_SECONDS = 0.15       # short fade-out instead of a hard cut (the skipper hears the tuning sound over it)
 PREFETCH = 2                   # songs kept downloaded and measured in line, so even skips in a row go straight on
 DECODER_STALL = 10             # seconds without audio from a decoder before giving up on the file
 WATCHDOG_AFTER = 8             # seconds without audio sent before the watchdog reports
 
-# ---- Tier system ----------------------------------------------------
-# skip_score >= TIER_LIMITS[i]  ->  tier i+2.   Tier 5 = banned forever.
-TIER_LIMITS = (1, 2, 3, 4)       # ~4 net skips bans a song (was 8)
-SKIP_PENALTY = 1.0             # added to score when a song is vote-skipped
+# ---- Tiers: star, 1, 0, -1, blocked (see rank.py) --------------------
+import rank                    # noqa: E402
+SKIP_PENALTY = 1.0             # added to score for a dislike that skips a song
+LOVE_HALF_DAYS = 21            # likes fade by half in three weeks
 FINISH_CREDIT = 0.5            # removed from score when a song plays to the end
 LIKE_CREDIT = 0.25             # removed from score for each listener's thumbs-up (the reverse of a skip)
 
@@ -191,6 +192,9 @@ current_track_id = None
 current_track_title = "Unknown Track"
 current_track_artist = ""
 current_track_started = 0.0
+# When a skip lands: the first moment after the old song's fade (the next song), on this
+# server's clock, as it's due at the encoder. The vote that skipped gets it in its reply.
+skip_turn = {"fut": None, "at": 0.0}
 current_track_path = None
 current_wave_key = None         # key for /api/wave/{key}: the player's waveform follows it
 VIBE = VibeCache()
@@ -265,8 +269,14 @@ def init_db():
             conn.execute("ALTER TABLE track_stats ADD COLUMN tier INTEGER DEFAULT 1")
         if "skip_score" not in existing:
             conn.execute("ALTER TABLE track_stats ADD COLUMN skip_score REAL DEFAULT 0")
-        if "boost" not in existing:      # curator's "play this more often" (0-3), tier unchanged
+        if "boost" not in existing:      # (the old "play this more often", moved to star by rank.py)
             conn.execute("ALTER TABLE track_stats ADD COLUMN boost INTEGER DEFAULT 0")
+        if "love" not in existing:       # listeners' likes, fading with time (love_at: as of when)
+            conn.execute("ALTER TABLE track_stats ADD COLUMN love REAL DEFAULT 0")
+            conn.execute("ALTER TABLE track_stats ADD COLUMN love_at REAL")
+        moved = rank.ensure_columns(conn)   # (the tier: star 2, 1, 0, -1, blocked -2; see rank.py)
+        if moved:
+            print(f"Tiers moved to star/1/0/-1/blocked: {moved} songs")
         # About each post in the channel: who posted it (the channel's signature, when the
         # channel signs posts), its hashtags, when it was posted, and when it was pinned
         # (pinned_at: kept while it stays pinned, cleared when it's unpinned)
@@ -327,35 +337,72 @@ def log_track_start(msg_id, title, reason="rotation"):
         """, (msg_id, title))
 
 
-def record_result(msg_id, skipped):
-    """Update a track's score/tier after it was skipped or played to the end."""
+def _write_rank(conn, msg_id, r, score, star_until):
+    """Save a song's tier (and the old columns other readers still look at)."""
+    conn.execute("UPDATE track_stats SET rank = ?, skip_score = ?, star_until = ?, is_blacklisted = ?, "
+                 "tier = ? WHERE telegram_msg_id = ?",
+                 (r, score, star_until, 1 if r == rank.BLOCKED else 0,
+                  {rank.STAR: 1, 1: 1, 0: 2, -1: 3, rank.BLOCKED: 5}[r], msg_id))
+
+
+def record_result(msg_id, skipped, weight=1.0):
+    """A dislike that skipped the song (weight: how much it counts; a lone listener's, or one
+    late in the song, counts less) or a play to the end: the score moves, and the tier with it."""
     with db() as conn:
-        row = conn.execute(
-            "SELECT skip_score FROM track_stats WHERE telegram_msg_id = ?", (msg_id,)
-        ).fetchone()
+        row = conn.execute("SELECT skip_score, rank, star_until FROM track_stats WHERE telegram_msg_id = ?",
+                           (msg_id,)).fetchone()
         if not row:
             return
-        old = row[0] or 0.0
-        score = max(0.0, old + (SKIP_PENALTY if skipped else -FINISH_CREDIT))
-        tier = 1 + sum(score >= limit for limit in TIER_LIMITS)
-        conn.execute(
-            "UPDATE track_stats SET skip_score = ?, tier = ?, skip_count = skip_count + ?"
-            + (", is_blacklisted = 1" if tier >= 5 else "") + " WHERE telegram_msg_id = ?",
-            (score, tier, 1 if skipped else 0, msg_id),
-        )
-    print(f"Track {msg_id}: score={score}, tier={tier}{' (BANNED)' if tier >= 5 else ''}")
+        score = rank.clamp((row[0] or 0.0) + (SKIP_PENALTY * weight if skipped else -FINISH_CREDIT))
+        r, until = rank.settle(row[1] or 0, score, row[2])
+        _write_rank(conn, msg_id, r, score, until)
+        if skipped:
+            conn.execute("UPDATE track_stats SET skip_count = skip_count + 1 WHERE telegram_msg_id = ?", (msg_id,))
+    print(f"Track {msg_id}: score={score:.2f}, tier {rank.NAMES[r]}")
+
+
+def love_of(love, love_at, now=None):
+    """Likes as they stand now: each halves in LOVE_HALF_DAYS."""
+    if not love or not love_at:
+        return 0.0
+    return love * 0.5 ** (((now or time.time()) - love_at) / (LOVE_HALF_DAYS * 86400))
 
 
 def load_track_info():
-    """Return (banned_ids, tiers, boosts) from the database."""
+    """(blocked ids, id -> tier, id -> score) from the database. Stars whose two weeks are up
+    become tier 1 here."""
     with db() as conn:
-        rows = conn.execute(
-            "SELECT telegram_msg_id, tier, is_blacklisted, boost FROM track_stats"
-        ).fetchall()
-    banned = {r[0] for r in rows if r[2] == 1 or (r[1] or 1) >= 5}
-    tiers = {r[0]: (r[1] or 1) for r in rows}
-    boosts = {r[0]: (r[3] or 0) for r in rows}
-    return banned, tiers, boosts
+        n = conn.execute("UPDATE track_stats SET rank = 1, star_until = NULL, skip_score = MAX(COALESCE(skip_score, 0), ?), tier = 1 "
+                         "WHERE rank = ? AND (star_until IS NULL OR star_until <= ?)",
+                         (rank.SCORE_MIN, rank.STAR, time.time())).rowcount
+        rows = conn.execute("SELECT telegram_msg_id, rank, is_blacklisted, skip_score FROM track_stats").fetchall()
+    if n:
+        print(f"Star time over: {n} song(s) back to tier 1")
+    banned = {r[0] for r in rows if r[1] == rank.BLOCKED}
+    ranks = {r[0]: (r[1] if r[1] is not None else 0) for r in rows}
+    scores = {r[0]: (r[3] or 0.0) for r in rows}
+    return banned, ranks, scores
+
+
+def mark_stars(ids_until):
+    """{id: until}: songs pinned in the channel or newly posted become stars until then (not
+    a blocked song, and not one already a star for longer)."""
+    if not ids_until:
+        return 0
+    now, n = time.time(), 0
+    with db() as conn:
+        for mid, until in ids_until.items():
+            if until <= now:
+                continue
+            row = conn.execute("SELECT rank, star_until, skip_score FROM track_stats WHERE telegram_msg_id = ?", (mid,)).fetchone()
+            if row is None:
+                conn.execute("INSERT OR IGNORE INTO track_stats (telegram_msg_id) VALUES (?)", (mid,))
+                row = (0, None, 0.0)
+            if row[0] == rank.BLOCKED or (row[0] == rank.STAR and (row[1] or 0) >= until):
+                continue
+            _write_rank(conn, mid, rank.STAR, row[2] or 0.0, until)
+            n += 1
+    return n
 
 
 # =====================================================================
@@ -745,7 +792,7 @@ GEO = CountryLookup(DATA_DIR)
 AUDIENCE = Audience(STUDIO.db_path, GEO)
 NOTES = FlamingoNotes(STUDIO.db_path)       # notes listeners leave by catching a flamingo (notes.py)
 NOTES.on_event = lambda kind, ip: AUDIENCE.event(kind, None, ip)
-app.include_router(build_curator_router(LISTENER_STATS, Tiers(DB_FILE, TIER_LIMITS), current_user, AUDIENCE, NOTES))
+app.include_router(build_curator_router(LISTENER_STATS, Tiers(DB_FILE), current_user, AUDIENCE, NOTES))
 app.include_router(build_notes_router(NOTES, current_user, get_client_ip))
 def _forget_live_song(media_id):
     """A song played (or dropped) in a live show: its upload goes, unless it's on the schedule."""
@@ -906,15 +953,21 @@ async def votes_needed():
 
 
 def like_result(msg_id):
-    """A thumbs-up: the song's skip score goes down a little (it climbs back toward the
-    tiers that play most often), the reverse of what a skip does."""
+    """A like: the score comes down a little (the reverse of a dislike), and enough recent
+    likes (rank.STAR_LOVE, each fading over weeks) make the song a star for two weeks."""
     with db() as conn:
-        row = conn.execute("SELECT skip_score FROM track_stats WHERE telegram_msg_id = ?", (msg_id,)).fetchone()
+        row = conn.execute("SELECT skip_score, rank, star_until, love, love_at FROM track_stats WHERE telegram_msg_id = ?",
+                           (msg_id,)).fetchone()
         if not row:
             return
-        score = max(0.0, (row[0] or 0.0) - LIKE_CREDIT)
-        tier = 1 + sum(score >= limit for limit in TIER_LIMITS)
-        conn.execute("UPDATE track_stats SET skip_score = ?, tier = ? WHERE telegram_msg_id = ?", (score, tier, msg_id))
+        score = rank.clamp((row[0] or 0.0) - LIKE_CREDIT)
+        love = love_of(row[3], row[4]) + 1
+        r, until = rank.settle(row[1] or 0, score, row[2])
+        if love >= rank.STAR_LOVE and r not in (rank.STAR, rank.BLOCKED):
+            r, until = rank.STAR, time.time() + rank.STAR_DAYS * 86400
+            print(f"Track {msg_id}: a star for {rank.STAR_DAYS} days (liked by many)")
+        _write_rank(conn, msg_id, r, score, until)
+        conn.execute("UPDATE track_stats SET love = ?, love_at = ? WHERE telegram_msg_id = ?", (love, time.time(), msg_id))
 
 
 async def register_like(request: Request):
@@ -985,10 +1038,10 @@ async def register_skip_vote(request: Request):
             same_ip = sum(1 for k in skip_votes if k.split("|", 1)[0] == client_ip)
             if same_ip >= VOTES_PER_IP:
                 return {"status": "ignored", "skipped": False,
-                        "message": "Enough votes from your network already. Waiting for someone else."}
+                        "message": "Enough dislikes from your network already. Waiting for someone else."}
     if voter in skip_votes:
         return {"status": "ignored", "skipped": False,
-                "message": "You already voted. Waiting for one more person."}
+                "message": "You already disliked it. Waiting for one more person."}
 
     skip_votes[voter] = (now, weight)
     needed = await votes_needed()
@@ -1000,11 +1053,17 @@ async def register_skip_vote(request: Request):
         AUDIENCE.event("skip", current_track_id, None)
         skip_requested = True          # the play loop fades it out and moves on
         skip_votes.clear()
-        return {"status": "success", "skipped": True,
-                "message": ("Your vote counts double. Skipping!" if weight > 1 else "Enough votes. Skipping!")}
+        fut = skip_turn["fut"] = asyncio.get_running_loop().create_future()
+        lands_at = None
+        try:                           # (the play loop answers within a fade's length)
+            lands_at = await asyncio.wait_for(asyncio.shield(fut), 1.5)
+        except Exception:
+            pass
+        return {"lands_at": lands_at, "status": "success", "skipped": True,
+                "message": ("Your dislike counts double. Skipping!" if weight > 1 else "Enough dislikes. Skipping!")}
 
     return {"status": "success", "skipped": False,
-            "message": f"Vote counted ({votes_in()}/{needed}). "
+            "message": f"Dislike counted ({votes_in()}/{needed}). "
                        f"Waiting for one more listener."}
 
 
@@ -1019,6 +1078,8 @@ async def now_playing(request: Request):
         "title": current_track_title,
         "artist": current_track_artist,
         "started_at": current_track_started,
+        # songs ending on their own blend into the next over this many seconds (no gap to wait in)
+        "blend": BLEND_FADE if BLEND else 0,
         "votes": votes_in(),
         "needed": await votes_needed(),
         "show": current_is_show,
@@ -1189,10 +1250,21 @@ def forget_track(msg_id):
 
 
 async def build_track_pool():
-    """Build one shuffled round from the channel's songs, leaving out banned ones."""
-    banned, _, _ = await asyncio.to_thread(load_track_info)
-    pool = [t for t in await channel_tracks() if t[0] not in banned]
+    """Build one shuffled round from the channel's songs: each tier's chance of being in it
+    (rank.CHANCE; a star gets an extra turn, blocked none)."""
+    banned, ranks, _ = await asyncio.to_thread(load_track_info)
+    playable = [t for t in await channel_tracks() if t[0] not in banned]
+
+    def turns_of(tid):
+        r = ranks.get(tid, 0)
+        rate = rank.CHANCE.get(r, 0.6) * (1 + rank.EXTRA_TURNS.get(r, 0))
+        return int(rate) + (random.random() < rate - int(rate))
+    turns = {t[0]: turns_of(t[0]) for t in playable}
+    pool = [t for t in playable if turns[t[0]] > 0] or playable   # never an empty round by chance
     random.shuffle(pool)
+    for t in list(pool):                       # (a star's extra turn, later in the round)
+        for k in range(1, turns.get(t[0], 1)):
+            pool.insert(random.randint(len(pool) * k // turns[t[0]], len(pool)), t)
     # In summer, each #SummerBaby song comes round SUMMER_TIMES times a round instead of once,
     # its extra turns spread over the later parts of the round (the 90-minute rule in
     # TrackQueue.next still keeps any song from coming back too soon)
@@ -1279,9 +1351,20 @@ class TrackQueue:
             except Exception as e:
                 print(f"Couldn't check pinned songs: {e}")
             self.fresh_scanned = now
-        if not self.fresh and not self.pinned:
+            # pinned and new posts are stars: pinned for STAR_DAYS from now, a new post until
+            # STAR_DAYS after it was posted
+            stars = {t[0]: _channel["dates"].get(t[0], now) + rank.STAR_DAYS * 86400 for t in self.fresh}
+            stars.update({t[0]: now + rank.STAR_DAYS * 86400 for t in self.pinned})
+            try:
+                await asyncio.to_thread(mark_stars, stars)
+            except Exception as e:
+                print(f"Couldn't mark stars: {e}")
+        banned, ranks, scores = await asyncio.to_thread(load_track_info)
+        # star songs (pinned, new, many likes) share the priority slot
+        liked = [t for t in await channel_tracks() if ranks.get(t[0]) == rank.STAR
+                 and not any(t[0] == f[0] for f in self.fresh) and not any(t[0] == p[0] for p in self.pinned)]
+        if not self.fresh and not self.pinned and not liked:
             return None
-        banned, tiers, _ = await asyncio.to_thread(load_track_info)
 
         def due(t):
             return t[0] not in banned and t[0] != self.last_id and now - self.last_played.get(t[0], 0) > FRESH_GAP_MIN * 60
@@ -1290,7 +1373,8 @@ class TrackQueue:
         if pinned:
             return min(pinned, key=lambda t: self.last_played.get(t[0], 0))
         ok = [t for t in self.fresh
-              if due(t) and tiers.get(t[0], 1) < 3]   # listeners keep skipping it: stop pushing
+              if due(t) and scores.get(t[0], 0.0) < rank.DOWN_AT]   # listeners keep disliking it: stop pushing
+        ok += [t for t in liked if due(t) and scores.get(t[0], 0.0) < rank.DOWN_AT and random.random() < 0.5]
         if not ok:
             return None
         # the one that's waited longest; the newest upload first among never-played ones
@@ -1515,11 +1599,38 @@ async def stop_decoder(dec):
         print(f"Decoder {dec.pid} didn't exit in time; moving on")
 
 
-async def play_file(bc: Broadcaster, path: str, interruptible=True):
+# A song that ends on its own blends into the next: the last BLEND_CUT seconds of the one
+# ending and the first BLEND_CUT of the next are cut off (fade-outs, intros, silence), and the
+# two overlap for BLEND_FADE seconds, one fading out as the other fades in. A skip, a studio
+# item or a host going live cut in as before (a short fade); songs shorter than BLEND_MIN
+# play whole.
+BLEND = env_bool("BLEND", True)
+BLEND_CUT, BLEND_FADE, BLEND_MIN = 5.0, 5.0, 30.0
+_blend = {"tail": None}            # the ending song's fade-out part, waiting for the next song
+
+
+def _gained(chunk, g):
+    return chunk if g >= 0.999 else (bytes(len(chunk)) if g <= 0.001 else audioop.mul(chunk, 2, g))
+
+
+async def flush_blend(bc):
+    """The next thing on air isn't a song (a show, a host, a wait): the ending song's
+    waiting part just fades out."""
+    tail, _blend["tail"] = _blend["tail"], None
+    if not tail:
+        return
+    n = len(tail)
+    for i in range(0, n, CHUNK):
+        await bc.write(_gained(tail[i:i + CHUNK], 1 - i / n))
+
+
+async def play_file(bc: Broadcaster, path: str, interruptible=True, blend=False):
     """Decode one file into the broadcaster.
 
     Returns 'finished', 'skipped' (listener vote), 'interrupted' (a scheduled
     studio item is due) or 'failed'. Studio items play with interruptible=False.
+    blend: a song in rotation, which fades in over the last song's waiting part (if any) and,
+    ending on its own, leaves its own for the next one (see BLEND).
     """
     global current_decoder, skip_requested
 
@@ -1531,8 +1642,12 @@ async def play_file(bc: Broadcaster, path: str, interruptible=True):
         await bc.pump_until(measuring)
         gain = measuring.result()
     level = song_filters(path, gain)
+    blend = blend and BLEND
+    mix = _blend["tail"] if blend else None
+    _blend["tail"] = None
     dec = await asyncio.create_subprocess_exec(
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        *(["-ss", f"{BLEND_CUT:g}"] if mix else []),    # (blending in: its first seconds are cut)
         "-i", path, "-vn",                      # -vn: ignore embedded cover art
         *level,
         "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1",
@@ -1541,20 +1656,41 @@ async def play_file(bc: Broadcaster, path: str, interruptible=True):
     current_decoder = dec
     rest = b""
     outcome = "finished"
+    # decoded but not sent yet: with blend, the last BLEND_CUT + BLEND_FADE seconds are kept in
+    # hand, so where the song ends is known before it's reached
+    look = int((BLEND_CUT + BLEND_FADE) * BYTES_PER_SEC) // FRAME * FRAME if blend else 0
+    buf = bytearray()
+    decoded = 0
+    mixed, mix_n = 0, len(mix) if mix else 0
+
+    def mixed_in(out):
+        nonlocal mixed
+        if not mix or mixed >= mix_n:
+            return out
+        # fading in over the old song's fading out, equal power (a straight line dips ~3 dB
+        # half-way: the two songs don't add up like one)
+        q = mixed / mix_n * math.pi / 2
+        old = mix[mixed:mixed + len(out)]
+        mixed += len(out)
+        if len(old) < len(out):
+            old += bytes(len(out) - len(old))
+        return audioop.add(_gained(out, math.sin(q)), _gained(old, math.cos(q)), 2)
+
     try:
         while True:
             cut_in = interruptible and (STUDIO.has_due() or LIVE.on_air() is not None)
             if skip_requested or cut_in:
-                # read a little more, fade it out, then stop this track
+                # a little more, faded out, then stop this track (what's in hand first)
                 want = int(SKIP_FADE_SECONDS * BYTES_PER_SEC) // FRAME * FRAME
-                tail = rest
+                tail = bytes(buf[:want]) + rest
                 while len(tail) < want:
                     more = await dec.stdout.read(want - len(tail))
                     if not more:
                         break
                     tail += more
+                tail = tail[:len(tail) // FRAME * FRAME]
                 if tail:
-                    await bc.write(fade(tail, 1.0, 0.0))
+                    await bc.write(fade(mixed_in(tail), 1.0, 0.0))
                 outcome = "interrupted" if cut_in else "skipped"
                 break
 
@@ -1565,12 +1701,26 @@ async def play_file(bc: Broadcaster, path: str, interruptible=True):
                 outcome = "failed"
                 break
             if not data:
+                # the end: blend (a long enough song, played on its own to here), else send the rest
+                if blend and decoded >= BLEND_MIN * BYTES_PER_SEC and len(buf) >= look:
+                    keep = len(buf) - look
+                    for i in range(0, keep, CHUNK):
+                        await bc.write(mixed_in(bytes(buf[i:min(i + CHUNK, keep)])))
+                    _blend["tail"] = bytes(buf[keep:keep + int(BLEND_FADE * BYTES_PER_SEC) // FRAME * FRAME])
+                else:
+                    for i in range(0, len(buf), CHUNK):
+                        await bc.write(mixed_in(bytes(buf[i:i + CHUNK])))
+                buf.clear()
                 break
             data = rest + data
             cut = len(data) // FRAME * FRAME      # never split a sample frame
             rest = data[cut:]
-            if cut:
-                await bc.write(data[:cut])
+            buf += data[:cut]
+            decoded += cut
+            while len(buf) - look >= CHUNK:
+                out = bytes(buf[:CHUNK])
+                del buf[:CHUNK]
+                await bc.write(mixed_in(out))
     finally:
         await stop_decoder(dec)
         current_decoder = None
@@ -1814,11 +1964,13 @@ async def radio_step(bc: Broadcaster, queue: TrackQueue, st):
     # 0. A host live from the studio comes before everything (a scheduled item that falls
     #    due meanwhile plays when they're done)
     if LIVE.on_air():
+        await flush_blend(bc)
         await play_live(bc)
         return
 
     # 1. Scheduled studio items always go first
     if STUDIO.has_due():
+        await flush_blend(bc)
         airings = STUDIO.take_due()
         if not airings:
             # Shouldn't happen; never spin without yielding (that would freeze the stream)
@@ -1837,6 +1989,8 @@ async def radio_step(bc: Broadcaster, queue: TrackQueue, st):
     #    falls due meanwhile)
     top_up(queue)
     pending = COMING[0]
+    if not pending.done():
+        await flush_blend(bc)          # (no next song to blend into yet: the last one fades out)
     await bc.pump_until(pending, stop=lambda: STUDIO.has_due() or LIVE.on_air() is not None)
     if not pending.done():
         return
@@ -1866,7 +2020,11 @@ async def radio_step(bc: Broadcaster, queue: TrackQueue, st):
     await asyncio.to_thread(log_track_start, msg_id, title, queue.reasons.get(msg_id, "rotation"))
 
     try:
-        outcome = await play_file(bc, path)
+        outcome = await play_file(bc, path, blend=True)
+        fut = skip_turn["fut"]
+        if fut is not None and not fut.done():
+            skip_turn["at"] = time.time() + bc.ahead() if outcome == "skipped" else 0.0
+            fut.set_result(skip_turn["at"] or None)
         if outcome == "skipped":
             await asyncio.to_thread(record_result, msg_id, True)
         elif outcome == "finished":
