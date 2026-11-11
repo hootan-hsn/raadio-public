@@ -89,7 +89,9 @@ studio's Rotation tile (`POST /api/curator/tracks/{id}` with `{"tier": "star" | 
 A dislike is the skip vote: enough of them and the song fades out and the next one starts. The
 vote's reply says when (`lands_at`), and the player plays a tuning sound until then, the same
 with the screen on or off, landing no sooner than 5 s after the press (`SKIP_LANDS_MS` in
-`web/script.js`). A song that ends on its own blends into the next: the last 5 s of one and the
+`web/script.js`): measured 5.2 s to full volume in Chrome, Safari and Firefox alike. The player
+feeds the stream in itself through Media Source, repackaging the Ogg Opus as WebM for Chrome and
+Firefox (`OggToWebm`, no re-encoding), so it can land a skip as soon as it chooses. A song that ends on its own blends into the next: the last 5 s of one and the
 first 5 s of the next are cut, and the two overlap for 5 s (`BLEND` in the controller; songs
 under 30 s play whole).
 

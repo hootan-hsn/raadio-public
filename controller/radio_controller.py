@@ -142,7 +142,7 @@ VOTE_WINDOW = 90               # seconds a vote stays valid
 # Each device votes on its own, but one internet address can't cast more than this many
 # (stops one person faking a crowd by clearing their browser)
 VOTES_PER_IP = max(1, int(os.getenv("VOTES_PER_IP", "3")))
-SKIP_FADE_SECONDS = 0.35       # short fade-out instead of a hard cut
+SKIP_FADE_SECONDS = 0.15       # short fade-out instead of a hard cut (the skipper hears the tuning sound over it)
 PREFETCH = 2                   # songs kept downloaded and measured in line, so even skips in a row go straight on
 DECODER_STALL = 10             # seconds without audio from a decoder before giving up on the file
 WATCHDOG_AFTER = 8             # seconds without audio sent before the watchdog reports

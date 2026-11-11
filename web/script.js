@@ -319,9 +319,9 @@
 
     [A, B].forEach(function (el) {
       // (when this stream's data started arriving, and how big a burst came with it: see lag())
-      el.addEventListener("loadstart", function () { el._t0 = 0; });
+      el.addEventListener("loadstart", function () { if (!el._feed) el._t0 = 0; });
       el.addEventListener("loadedmetadata", function () {
-        if (!/\/radio/.test(el.src)) return;
+        if (el._feed || !/\/radio/.test(el.src)) return;              // (fed in: see feed)
         // when Icecast sent the burst: just after we asked for it (on a slow line the burst
         // takes a while to arrive, and its first bytes alone made this up to 1 s late)
         var nowS = Date.now() / 1000;
@@ -333,7 +333,7 @@
       });
       // where its clock starts: 0, or (Chrome, Opus) the encoder's clock at the burst's start
       el.addEventListener("loadeddata", function () {
-        if (!el._t0) return;
+        if (!el._t0 || el._feed) return;
         el._ct0 = el.currentTime || 0;
         if (el._ogg && sideClock === null) sideClock = !(el._ct0 > 1);   // (on the encoder's clock: no need)
       });
@@ -445,6 +445,7 @@
     }
 
     function release(el) {
+      if (el._feed) { el._feed.stop(); el._feed = null; }
       el._g0 = null;                   // (its side clock was for the stream it had: see openStream)
       try { el.pause(); } catch (e) { /* ignore */ }
       el.removeAttribute("src");
@@ -528,7 +529,9 @@
       return undefined;
     }
     function openStream(el, url) {
+      if (el._feed) { el._feed.stop(); el._feed = null; }
       el._req = Date.now() / 1000; el._g0 = null;
+      if (useMSE && /\.opus/.test(url)) { feed(el, url); return; }
       el.src = url;
       if (sideClock === false || !/\.opus/.test(url) || !window.fetch || !window.AbortController) return;
       var src = el.src, ctrl = new AbortController(), buf = new Uint8Array(0), over = false;
@@ -557,6 +560,194 @@
       }, function () { done(null); });
     }
 
+    // ---- Ogg Opus -> WebM, for Media Source in browsers that only take WebM (Chrome, Firefox) ----
+    // The station's Opus stream is Ogg; Chrome's and Firefox's Media Source take Opus only in
+    // WebM. Each Ogg page's packets become one WebM cluster (no re-encoding: the same Opus
+    // packets), timed from the first audio page firstPage() reads the clock from, so the feed's
+    // clock (timestampOffset = that page's moment) holds just as with Ogg in Safari.
+    function OggToWebm() {
+      var buf = new Uint8Array(0), started = false, part = null, samples = 0;
+      function vint(n) {                                  // EBML size, always 8 bytes (valid, simple)
+        var b = new Uint8Array(8); b[0] = 1;
+        for (var k = 7; k >= 1; k--) { b[k] = n & 255; n = Math.floor(n / 256); }
+        return b;
+      }
+      function cat(list) {
+        var n = 0, k; for (k = 0; k < list.length; k++) n += list[k].length;
+        var o = new Uint8Array(n), at = 0;
+        for (k = 0; k < list.length; k++) { o.set(list[k], at); at += list[k].length; }
+        return o;
+      }
+      function el(id, body) { return cat([new Uint8Array(id), vint(body.length), body]); }
+      function uint(id, v) {
+        var b = []; do { b.unshift(v & 255); v = Math.floor(v / 256); } while (v > 0);
+        return el(id, new Uint8Array(b));
+      }
+      function str(id, t) { var b = new Uint8Array(t.length); for (var k = 0; k < t.length; k++) b[k] = t.charCodeAt(k); return el(id, b); }
+      function flt(id, v) { var b = new Uint8Array(8); new DataView(b.buffer).setFloat64(0, v); return el(id, b); }
+      function init(head) {                                // EBML header, Segment (size unknown), Info, Tracks
+        var ch = head.length > 9 ? head[9] : 2;
+        return cat([
+          el([0x1A, 0x45, 0xDF, 0xA3], cat([uint([0x42, 0x86], 1), uint([0x42, 0xF7], 1), uint([0x42, 0xF2], 4), uint([0x42, 0xF3], 8),
+                                            str([0x42, 0x82], "webm"), uint([0x42, 0x87], 4), uint([0x42, 0x85], 2)])),
+          new Uint8Array([0x18, 0x53, 0x80, 0x67, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+          el([0x15, 0x49, 0xA9, 0x66], cat([uint([0x2A, 0xD7, 0xB1], 1000000), str([0x4D, 0x80], "raadio"), str([0x57, 0x41], "raadio")])),
+          el([0x16, 0x54, 0xAE, 0x6B], el([0xAE], cat([uint([0xD7], 1), uint([0x73, 0xC5], 1), uint([0x83], 2), str([0x86], "A_OPUS"),
+            el([0x63, 0xA2], head), uint([0x56, 0xBB], 80000000), el([0xE1], cat([flt([0xB5], 48000), uint([0x9F], ch)]))])))
+        ]);
+      }
+      function cluster(packets) {                          // one page's packets: [{data, at (samples)}]
+        if (!packets.length) return null;
+        var tc = Math.round(packets[0].at / 48), blocks = [uint([0xE7], tc)];
+        for (var k = 0; k < packets.length; k++) {
+          var rel = Math.round(packets[k].at / 48) - tc;
+          var h = new Uint8Array([0x81, (rel >> 8) & 255, rel & 255, 0x80]);   // track 1, keyframe
+          blocks.push(el([0xA3], cat([h, packets[k].data])));
+        }
+        return el([0x1F, 0x43, 0xB6, 0x75], cat(blocks));
+      }
+      return {
+        // more Ogg bytes in; the WebM bytes they make (an init segment first)
+        push: function (bytes) {
+          var b = new Uint8Array(buf.length + bytes.length); b.set(buf); b.set(bytes, buf.length); buf = b;
+          var i = 0, res = [];
+          while (i + 27 <= buf.length) {
+            if (buf[i] !== 79 || buf[i + 1] !== 103 || buf[i + 2] !== 103 || buf[i + 3] !== 83) { i++; continue; }
+            var n = buf[i + 26], body = i + 27 + n, size = 0, k;
+            if (body > buf.length) break;
+            for (k = 0; k < n; k++) size += buf[i + 27 + k];
+            if (body + size > buf.length) break;
+            var cont = buf[i + 5] & 1, lo = (buf[i + 6] | buf[i + 7] << 8 | buf[i + 8] << 16 | buf[i + 9] << 24) >>> 0;
+            var hi = (buf[i + 10] | buf[i + 11] << 8 | buf[i + 12] << 16 | buf[i + 13] << 24) >>> 0;
+            if (size >= 8 && buf[body] === 79 && buf[body + 4] === 72) {   // "OpusHead"
+              res.push(init(buf.slice(body, body + size)));
+            } else if (!started && (lo || hi) && hi < 0x80000000 && !cont) {
+              started = true;                              // (from the same page as firstPage)
+            }
+            if (started) {
+              var packets = [], o = body, len = 0;
+              if (cont && !part) {                         // (the rest of a packet we never saw the start of)
+                for (k = 0; k < n && buf[i + 27 + k] === 255; k++) o += 255;
+                if (k < n) { o += buf[i + 27 + k]; k++; } else { i = body + size; continue; }
+              } else k = 0;
+              for (; k < n; k++) {
+                len += buf[i + 27 + k];
+                if (buf[i + 27 + k] < 255) {
+                  var d = buf.slice(o, o + len);
+                  if (part) { d = cat([part, d]); part = null; }
+                  if (d.length) { packets.push({ data: d, at: samples }); samples += opusSamples(d, 0, d.length); }
+                  o += len; len = 0;
+                }
+              }
+              if (len) part = part ? cat([part, buf.slice(o, o + len)]) : buf.slice(o, o + len);   // (goes on next page)
+              var c = cluster(packets);
+              if (c) res.push(c);
+            }
+            i = body + size;
+          }
+          buf = buf.slice(i);
+          return res;
+        }
+      };
+    }
+
+    // ---- The stream fed in by the page (Media Source): Safari on a Mac, Chrome, Firefox ----
+    // A browser playing a live stream itself waits for a good deal in hand before it plays
+    // (Safari ~4.5 s; Chrome a whole 32 KB beyond the playhead, ~2 s of MP3, ~4 s of Opus), so a
+    // skip couldn't land sooner. Fed in by the page through Media Source, it plays on with under
+    // a second in hand (measured in Safari: 8 s with 0.6-0.9 s, no stutter), at any speed, and on
+    // the encoder's own clock (the first page's moment set as where the data starts), so skips,
+    // lined-up quality switches and the timeline all work as before, and skips land sooner.
+    // Safari takes the Ogg as it comes; Chrome and Firefox take Opus only in WebM, so the page
+    // repackages it (OggToWebm). Not on iPhone (no Media Source there). ?mse=0 turns it off.
+    var MSE_TYPE = (function () {
+      try {
+        if (!(window.MediaSource && window.fetch && window.ReadableStream && window.AbortController)) return null;
+        if (MediaSource.isTypeSupported('audio/ogg; codecs="opus"')) return 'audio/ogg; codecs="opus"';
+        if (MediaSource.isTypeSupported('audio/webm; codecs="opus"')) return 'audio/webm; codecs="opus"';
+      } catch (e) { /* ignore */ }
+      return null;
+    })();
+    var useMSE = (function () {
+      try {
+        var p = new URLSearchParams(location.search).get("mse");
+        if (p === "0" || p === "1") return p === "1" && !!MSE_TYPE;
+        return !!MSE_TYPE && !(/iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1));
+      } catch (e) { return false; }
+    })();
+    var mseWorked = false;
+    var MSE_NEED = 1.5;              // seconds in hand a skip lands with (Safari plays on with less)
+    var MSE_COMFY = 5;               // ...and how much it builds back up to afterwards (see the watchdog)
+    function feed(el, url) {
+      var ms = new MediaSource(), ctrl = new AbortController(), q = [], sb = null, head = new Uint8Array(0);
+      var remux = /webm/.test(MSE_TYPE) ? OggToWebm() : null;
+      function add(bytes) { if (!remux) { q.push(bytes); return; } var w = remux.push(bytes); for (var k = 0; k < w.length; k++) q.push(w[k]); }
+      var g0 = null, offsetSet = false, started = false;
+      var f = el._feed = { done: false, stopped: false, stop: function () {
+        if (f.stopped) return;
+        f.stopped = true;
+        try { ctrl.abort(); } catch (e) { /* ignore */ }
+        try { URL.revokeObjectURL(f.url); } catch (e) { /* ignore */ }
+      } };
+      function broke() { if (f.stopped || el._feed !== f) return; f.stop(); el.dispatchEvent(new Event("error")); }
+      el._t0 = 0;
+      el.src = f.url = URL.createObjectURL(ms);
+      function pump() {
+        if (f.stopped || !sb || sb.updating || ms.readyState !== "open" || g0 == null) return;
+        var b = el.buffered;
+        try {
+          if (!offsetSet) { sb.timestampOffset = g0; offsetSet = true; }
+          if (!started && b.length) {                                    // (from the burst's start, as streams play)
+            started = true;
+            el.currentTime = el._ct0 = b.start(0);
+          }
+          if (b.length && el.currentTime - b.start(0) > 60) { sb.remove(b.start(0), el.currentTime - 30); return; }   // (old audio out)
+          if (q.length) { sb.appendBuffer(q[0]); q.shift(); }
+        } catch (e) {
+          if (e && e.name === "QuotaExceededError" && b.length && el.currentTime - b.start(0) > 10) {
+            try { sb.remove(b.start(0), el.currentTime - 5); } catch (x) { broke(); }
+            return;
+          }
+          broke();
+        }
+      }
+      ms.addEventListener("sourceopen", function () {
+        if (f.stopped) return;
+        try {
+          sb = ms.addSourceBuffer(MSE_TYPE);
+          sb.mode = "sequence";                                          // (one after another, from g0)
+        } catch (e) { broke(); return; }
+        sb.addEventListener("updateend", pump);
+        sb.addEventListener("error", broke);
+        pump();
+      }, { once: true });
+      fetch(url, { cache: "no-store", signal: ctrl.signal }).then(function (res) {
+        if (!res.ok || !res.body || !res.body.getReader) { broke(); return; }
+        var rd = res.body.getReader();
+        (function more() {
+          rd.read().then(function (r) {
+            if (f.stopped) return;
+            if (r.done) { f.done = true; return; }                       // (the watchdog takes it from there)
+            if (g0 == null) {
+              var b = new Uint8Array(head.length + r.value.length);
+              b.set(head); b.set(r.value, head.length); head = b;
+              var g = firstPage(head);
+              if (g === undefined) { if (head.length > 262144) broke(); else more(); return; }
+              g0 = g; add(head); head = null;
+              // (what loadedmetadata says for a stream the browser fetches itself)
+              var nowS = Date.now() / 1000, info = streamInfo(url);
+              el._t0 = el._req && srv.rtt < 5 ? Math.min(nowS, el._req + srv.rtt / 2) : nowS;
+              el._ogg = true; el._kbit = info.kbit; el._burstBytes = info.bytes; el._burst = info.burst;
+              el._edge0 = edgeOf(el); el._ct0 = g0;
+            } else add(r.value);
+            el.dispatchEvent(new Event("progress"));
+            pump();
+            more();
+          }, function () { if (!f.stopped) f.done = true; });
+        })();
+      }, broke);
+    }
+
     // How far behind this stream's newest audio the playhead is: what has arrived here and
     // not been played yet (seconds), or -1 if unknown
     function lag(el) {
@@ -570,6 +761,7 @@
     // ~4 s of Opus HQ (more in its quiet parts), ~8 s of Saver. Skips landing with less
     // stuttered 2-3 s into the new song.
     function safeLag(el) {
+      if (el && el._feed) return MSE_NEED;
       if (!el || !el._kbit) return 3;
       var bps = el._kbit * 125;                                       // bytes per second
       if (onClock(el)) {                                              // (Opus: what it really is now)
@@ -632,7 +824,7 @@
       el.preload = "auto";
       el.volume = 1;
       openStream(el, streamUrl());
-      try { el.load(); } catch (e) { /* ignore */ }
+      if (!el._feed) { try { el.load(); } catch (e) { /* ignore */ } }
       warmEl = el; warmAt = Date.now();
       clearTimeout(warmTimer);
       warmTimer = setTimeout(function () {           // pressed but never tapped (e.g. a scroll)
@@ -683,6 +875,8 @@
           emit("quality", { q: quality, fallback: true });
         }
         // Opus never played on this device and keeps failing: fall back to MP3 for good
+        // Fed in and never worked here: let the browser fetch the stream itself again
+        if (useMSE && !mseWorked && n + 1 >= 3) useMSE = false;
         if (useOpus && !opusWorked && n + 1 >= 3) {
           useOpus = false;
           emit("codec", "mp3");
@@ -710,7 +904,7 @@
       }
       el.addEventListener("canplay", ok);
       el.addEventListener("error", bad);
-      if (!warmed) el.load();
+      if (!warmed && !el._feed) el.load();
       else if (el.error) bad();
       else if (el.readyState >= 3) ok();             // already had enough while the finger was down
     }
@@ -793,6 +987,7 @@
         if (weak.low && !everPlayed) weak.downAt = Date.now();     // (started low: steady time counts from here)
         playedHere = true; everPlayed = true;
         if (useOpus && !opusWorked) { opusWorked = true; emit("codec", "opus"); }
+        if (el._feed) mseWorked = true;
         if (lite()) liteWorked = true;
         resetWatch();
         stopKeep();
@@ -852,7 +1047,7 @@
       // then jumped the music a few seconds ahead, which sounded like the song cutting off.)
       var be = bufferedEnd(cur);
       if (be > lastBufEnd + 0.05) { lastBufEnd = be; lastGrow = now; }
-      if (cur.networkState === 1 /* NETWORK_IDLE */ && now - lastGrow > 4000 && ahead(cur) < 2.5) connect("source-closed");
+      if ((cur._feed ? cur._feed.done : cur.networkState === 1 /* NETWORK_IDLE */) && now - lastGrow > 4000 && ahead(cur) < 2.5) connect("source-closed");
       // How far behind live we are: what's buffered but not played yet. Chrome updates the
       // buffered range in steps, so smooth it; ignore nonsense from browsers that report none.
       var a = lag(cur);
