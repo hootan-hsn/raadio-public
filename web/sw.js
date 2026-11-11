@@ -1,6 +1,6 @@
 /* Raadio service worker: makes the app installable and opens offline.
    It never touches the live stream, the skip API or the studio API. */
-const VERSION = "raadio-public-v1";
+const VERSION = "raadio-public-v3";
 const SHELL = [
   "./",
   "./index.html",

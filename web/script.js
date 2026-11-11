@@ -736,6 +736,23 @@
     // Music coming in under the tuning sound starts quiet and swells (see the tuner);
     // browsers that won't change an element's volume (iPhone) just start at full.
     var soft = false, volTimer = 0;
+    // A skip's tail: the old song is turned down to a whisper under the tuning sound, never
+    // muted: Chrome on Android pauses a muted stream in the background, and the page then
+    // stays silent until it's opened. The whisper is far below hearing under the tuning sound
+    // and still counts as playing, so a skip works the same with the screen on or off.
+    // Browsers that won't change an element's volume (iPhone) mute it instead.
+    var WHISPER = 0.003, ducked = false;
+    function skipDuck(on, ms) {
+      ducked = !!on;
+      if (!cur.getAttribute("src")) return;
+      if (canFade) {
+        try { cur.muted = false; } catch (e) { /* ignore */ }
+        // (down at once: the run through the tail may begin straight away, and a stream
+        // that's heard must never change speed; back up gently)
+        if (on) { clearInterval(volTimer); volTimer = 0; try { cur.volume = WHISPER; } catch (e) { /* ignore */ } }
+        else rampVol(cur, cur.volume, 1, ms || 300);
+      } else { try { cur.muted = !!on; } catch (e) { /* ignore */ } }
+    }
     function rampVol(el, from, to, ms) {
       if (!canFade) return;
       clearInterval(volTimer);
@@ -751,11 +768,11 @@
     function promote(my, el, old) {
       if (my !== gen || !wanted) { release(el); return; }
       if (fadeTimer) { clearInterval(fadeTimer); fadeTimer = null; fadeEnd = null; }
-      var fade = canFade && audible(old);
+      var fade = canFade && audible(old) && !ducked;
       cur = el; nxt = old;
       clearInterval(volTimer); volTimer = 0;
-      el.muted = false;
-      el.volume = fade ? 0 : (soft && canFade ? 0.15 : 1);
+      el.muted = ducked && !canFade;
+      el.volume = ducked ? (canFade ? WHISPER : 1) : fade ? 0 : (soft && canFade ? 0.15 : 1);   // (mid-skip: stays down)
       var p = el.play(), settled = false;
       // The phone may neither start the sound nor refuse it (during a phone call, some just
       // never answer). Waiting on that left the player stuck "connecting", and the next tap
@@ -870,6 +887,9 @@
         done();
       }
       if (!audible(el)) { finish(); return 0; }
+      // (a stream that's being heard never changes speed: only one turned down for the skip.
+      // Turned back up, the old song just plays out.)
+      if (!ducked) { finish(); return 0; }
       // the moment under the playhead, straight from the stream (see heardDue()), so it stays
       // exact while the speed changes
       function heard() { var h = heardDue(el); return h != null ? h : heardAt(); }
@@ -1068,11 +1088,9 @@
     }
 
     document.addEventListener("visibilitychange", function () {
-      // gone to the background mid-skip: let the music play on, unmuted and at speed 1
-      // (Chrome on Android pauses a muted stream in the background, and it stayed silent)
+      // (a skip carries on in the background: nothing in it is muted, see skipDuck)
       if (document.hidden && wanted) {
-        if (rushTimer) { clearInterval(rushTimer); rushTimer = 0; setRate(cur, 1); }
-        try { if (cur.muted) cur.muted = false; } catch (e) { /* ignore */ }
+        try { if (cur.muted && !ducked) cur.muted = false; } catch (e) { /* ignore */ }
       }
       if (document.visibilityState === "visible" && wanted && !connecting && !audible(cur)) connect("resume");
     });
@@ -1111,8 +1129,10 @@
       // the tuner: start the next stream quietly / swell it up / dip it under the static
       setSoft: function (on) { soft = !!on; },
       // silence the stream at once / bring it back (works on iPhone too, unlike volume)
-      mute: function (on) { try { cur.muted = !!on; } catch (e) { /* ignore */ } },
-      swell: function (ms) { if (audible(cur)) rampVol(cur, Math.min(cur.volume, 0.15), 1, ms); },
+      mute: function (on) { try { cur.muted = !!on || (ducked && !canFade); } catch (e) { /* ignore */ } },
+      swell: function (ms) { if (audible(cur) && !ducked) rampVol(cur, Math.min(cur.volume, 0.15), 1, ms); },
+      skipDuck: skipDuck,
+      ducked: function () { return ducked; },
       duck: function (level, ms) { if (audible(cur)) rampVol(cur, cur.volume, level, ms); },
       quality: function () { return quality; },
       autoSaver: function () { return weak.low; },
@@ -1339,7 +1359,7 @@
     // too soon, the old song's tail at eight times speed.)
     var quiet = false;               // the saved recording is playing (keeper): no static over it
     function start(level, toward) {
-      if (quiet) return;
+      if (quiet || (typeof skipFx !== "undefined" && skipFx && skipFx.active())) return;   // (a skip plays its own)
       clearTimeout(offTimer); offTimer = 0;
       var c = context();
       if (!c) return;
@@ -1428,6 +1448,86 @@
              quiet: function (on) { quiet = !!on; if (on) { clearTimeout(mergeTimer); mergeTimer = 0; stop(); } } };
   })();
 
+
+  /* ---------------- A skip: the tuning sound and the landing ----------------
+     The same with the screen on or off. On the tap (or when the vote's reply says it
+     skipped) the old song goes down to a whisper (engine.skipDuck) and the tuning sound plays,
+     through an <audio> element, not Web Audio: Chrome on Android won't start Web Audio in the
+     background. It's the tuner's own sound, recorded (sounds/). The engine runs through the
+     old song's tail to the new song's first moment (from /now-playing), where the page's
+     tuning sound fades out and the stream comes back up. */
+  var skipFx = (function () {
+    var FILES = ["sounds/skip-tuning-0.mp3", "sounds/skip-tuning-1.mp3", "sounds/skip-tuning-2.mp3"];
+    var bed = null, k = Math.floor(Math.random() * FILES.length), active = false, guard = 0, fadeT = 0, t0 = 0, primed = false;
+    var canFade = (function () { try { var a = new Audio(); a.volume = 0.5; return a.volume === 0.5; } catch (e) { return false; } })();
+    function el() {
+      if (!bed) { bed = new Audio(); bed.preload = "auto"; bed.loop = true; bed.src = FILES[k]; }
+      return bed;
+    }
+    // iOS lets a page start a sound later (from a headset, say) only on an element it once
+    // started inside a tap: start it, silently, on the first one
+    function prime() {
+      if (primed) return;
+      primed = true;
+      var b = el();
+      b.muted = true;
+      var p = b.play();
+      var done = function () { if (!active) { try { b.pause(); } catch (e) { /* ignore */ } } b.muted = false; };
+      if (p && p.then) p.then(done, done); else done();
+    }
+    ["pointerdown", "keydown", "touchend"].forEach(function (ev) { document.addEventListener(ev, prime, { capture: true, passive: true }); });
+    function stopBed(ms) {
+      clearInterval(fadeT); fadeT = 0;
+      if (!bed) return;
+      var b = bed;
+      if (!canFade || !ms) { try { b.pause(); } catch (e) { /* ignore */ } return; }
+      var s0 = performance.now(), v0 = b.volume;
+      fadeT = setInterval(function () {
+        var q = Math.min(1, (performance.now() - s0) / ms);
+        try { b.volume = v0 * (1 - q); } catch (e) { /* ignore */ }
+        if (q >= 1) { clearInterval(fadeT); fadeT = 0; if (!active) { try { b.pause(); } catch (e) { /* ignore */ } } }
+      }, 30);
+    }
+    function begin(why) {
+      if (active) return;
+      active = true; t0 = Date.now();
+      tuning.stop();                                   // (the tuner's live sound, if a stall started it)
+      engine.skipDuck(true);
+      var b = el();
+      clearInterval(fadeT); fadeT = 0;
+      k = (k + 1) % FILES.length;
+      if (b.src.indexOf(FILES[k]) < 0) b.src = FILES[k];
+      try { b.currentTime = 0; } catch (e) { /* ignore */ }
+      b.muted = false;
+      try { b.volume = 1; } catch (e) { /* ignore */ }
+      var p = b.play();
+      // (no tuning sound: the old song comes back up rather than leave a silence, and plays
+      // on until the landing, at its own speed: see engine.rush)
+      if (p && p.catch) p.catch(function (e) {
+        log.add("warn", "Skip's tuning sound couldn't start (" + (e && e.name || "blocked") + ")");
+        if (active) engine.skipDuck(false);
+      });
+      // (the landing normally comes 3-6 s after the press; if it never does, the music comes
+      // back anyway)
+      clearTimeout(guard);
+      guard = setTimeout(function () { if (active) { log.add("warn", "Skip didn't land in time: back to the stream"); end(500); } }, 10000);
+    }
+    function end(ms) {
+      if (!active) return;
+      active = false;
+      clearTimeout(guard);
+      engine.skipDuck(false);
+      stopBed(ms);
+    }
+    return {
+      begin: begin,
+      // landed on the skip's moment: the station's own tuning sound takes over from here
+      land: function () { var s = (Date.now() - t0) / 1000; end(700); return s; },
+      // the vote didn't skip after all: straight back to the song
+      cancel: function () { end(150); },
+      active: function () { return active; }
+    };
+  })();
 
   /* ---------------- Front-face UI ---------------- */
   var ui = {
@@ -1843,12 +1943,9 @@
     // This vote will surely skip (alone on the station, or the last one needed): tune away
     // from the old song on the tap itself instead of after the server's answer
     var myWeight = 1;
-    // In the background (a skip from the notification or a headset) the old song just plays
-    // out its few seconds into the new one: Chrome on Android pauses a muted stream in the
-    // background and can't play the tuning sound there, so it went silent
-    var bg = document.hidden;
-    var sure = CONFIG.CONTINUOUS_STREAM && !bg && voteState.votes + myWeight >= voteState.needed;
-    if (sure) { tuning.skip(engine.latency() + 2.5); }
+    // The same with the screen on or off (a headset, the lock screen, the notification): see skipFx
+    var sure = CONFIG.CONTINUOUS_STREAM && voteState.votes + myWeight >= voteState.needed;
+    if (sure) skipFx.begin();
 
     var order = [hosts.current()].concat(hosts.others());
     var i = 0;
@@ -1864,18 +1961,17 @@
 
     tryNext().then(function (data) {
       setStatus(data.message || "Vote sent");
-      if (!data.skipped && sure) { tuning.cancelSkip(); }   // it didn't go through after all
+      if (!data.skipped && sure) skipFx.cancel();   // it didn't go through after all
       if (data.skipped) {
         lastSkipAt = Date.now();
         resetVote();
         engine.skip();
         log.add("ok", "Track skipped by listeners");
-        if (CONFIG.CONTINUOUS_STREAM && !bg) {
+        if (CONFIG.CONTINUOUS_STREAM) {
           // The server has moved on, but this speaker is still a few seconds behind it.
           // Don't make the listener sit through the old song's tail: dip it under the
           // tuning sound now, and lock on to the next song the moment it arrives here.
-          var lag = engine.latency() + 1.8;      // fallback only: the real moment comes from the server
-          if (!sure) { tuning.skip(lag); }
+          if (!sure) skipFx.begin();
           setStatus("Skipping — tuning in…");
           // ask for the new song's exact start time straight away (and a few more times)
           skipping = Date.now();
@@ -1887,7 +1983,7 @@
       else resetVote();
     }).catch(function () {
       resetVote();
-      if (sure) { tuning.cancelSkip(); }
+      if (sure) skipFx.cancel();
       setStatus(navigator.onLine ? "Skip server unreachable" : "You're offline");
       log.add("error", "Skip vote failed" + (source ? " (" + source + ")" : ""));
     }).then(function () {
@@ -3395,10 +3491,9 @@
             if (skipping) {                // our skip: run through the old song's (muted) tail and land on the new one
               skipping = 0;
               // (the fallback, should the fast-forward never finish: as long as it can take)
-              tuning.lockIn(Math.max(0, wait) + engine.safeLag() + 4.5);
               pendingId = d.id;
               clearTimeout(pendingTimer);
-              engine.rush(engine.toDevice(d.started_at), function () { tuning.lockIn(0.15); pendingId = null; show(d); });
+              engine.rush(engine.toDevice(d.started_at), function () { skipFx.land(); pendingId = null; show(d); });
               return;
             }
             if (wait > 0.2) {
