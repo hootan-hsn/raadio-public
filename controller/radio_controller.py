@@ -1224,6 +1224,28 @@ async def scan_fresh_tracks():
     return [t for t in await channel_tracks() if _channel["dates"].get(t[0], 0) >= cutoff]
 
 
+def recent_plays(seconds):
+    """(track id -> when it last played, the last one played) from the play log, so the
+    90-minute rule carries on across a restart."""
+    with db() as conn:
+        rows = conn.execute("SELECT telegram_msg_id, MAX(ts) FROM play_log WHERE ts >= ? "
+                            "GROUP BY telegram_msg_id ORDER BY 2", (int(time.time() - seconds),)).fetchall()
+    return {r[0]: float(r[1]) for r in rows}, (rows[-1][0] if rows else None)
+
+
+def songs_since_priority(limit=50):
+    """How many songs have played since the last pinned/new-upload slot (the play log), so a
+    restart carries on the count instead of starting on a priority slot."""
+    with db() as conn:
+        rows = conn.execute("SELECT reason FROM play_log ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+    n = 0
+    for (reason,) in rows:
+        if reason in ("new", "pinned"):
+            return n
+        n += 1
+    return n
+
+
 class TrackQueue:
     """Hands out tracks one at a time, rebuilding the round when it runs out,
     and slipping a new upload in every FRESH_EVERY songs."""
@@ -1234,9 +1256,10 @@ class TrackQueue:
         self.fresh = []
         self.fresh_scanned = 0.0
         self.last_played = {}          # track id -> when it was last handed out
-        self.since_fresh = FRESH_EVERY # so a brand-new upload can play soon after a restart
+        self.since_fresh = FRESH_EVERY # (until the play log says how many have played since the last priority slot)
         self.pinned = []
         self.round_seen = set()        # songs already played this round (summer songs come round more than once)
+        self.recalled = False          # the play log read after a restart (see next)
         self.reasons = {}              # track id -> why it was last picked: pinned, new, summer, rotation
 
     async def _pick_fresh(self):
@@ -1274,6 +1297,17 @@ class TrackQueue:
         return min(ok, key=lambda t: self.last_played.get(t[0], 0))
 
     async def next(self):
+        if not self.recalled:
+            self.recalled = True
+            try:
+                # (the whole fresh window, not just the last 90 min: pinned songs and new uploads
+                # are taken longest-waited first, and with only 90 min recalled they all tied at
+                # "never", so every restart opened with the same one: the first pinned or newest)
+                self.last_played, self.last_id = await asyncio.to_thread(
+                    recent_plays, max(FRESH_GAP_MIN * 60, FRESH_DAYS * 86400))
+                self.since_fresh = await asyncio.to_thread(songs_since_priority)
+            except Exception as e:
+                print(f"Couldn't read the play log: {e}")
         track = None
         if self.since_fresh >= FRESH_EVERY:
             track = await self._pick_fresh()
@@ -1281,6 +1315,7 @@ class TrackQueue:
             self.since_fresh = 0
             self.reasons[track[0]] = "pinned" if any(p[0] == track[0] for p in self.pinned) else "new"
             self.pool = [t for t in self.pool if t[0] != track[0]]   # don't repeat it later this round
+            self.round_seen.add(track[0])
             print(("Pinned song priority: " if any(p[0] == track[0] for p in self.pinned) else "New upload priority: ") + track[1])
         else:
             # (a summer song's extra turns: once everything left this round was heard in the
@@ -1758,6 +1793,13 @@ async def live_radio_loop():
                 await bc.pump_until(asyncio.create_task(asyncio.sleep(2)))
 
 
+async def _record_finished(msg_id):
+    try:
+        await asyncio.to_thread(record_result, msg_id, False)
+    except Exception as e:
+        print(f"Couldn't count track {msg_id} as heard: {e}")
+
+
 async def radio_step(bc: Broadcaster, queue: TrackQueue, st):
     """One pass of the play loop: a due studio item, or the next song."""
     global current_track_path
@@ -1808,6 +1850,16 @@ async def radio_step(bc: Broadcaster, queue: TrackQueue, st):
         print(f"Could not prepare the next track: {e}")
         return                         # (on to the next in line, ready or coming)
 
+    # (banned by a curator while it waited in line: it doesn't play)
+    banned, _, _ = await asyncio.to_thread(load_track_info)
+    if msg_id in banned:
+        print(f"Passing over banned track {msg_id}")
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+
     set_now_playing(msg_id, title, artist, show=False, wave_key=str(msg_id), lead=bc.ahead())
     current_track_path = path
     print(f"Streaming: {artist + ' - ' if artist else ''}{title}")
@@ -1818,7 +1870,8 @@ async def radio_step(bc: Broadcaster, queue: TrackQueue, st):
         if outcome == "skipped":
             await asyncio.to_thread(record_result, msg_id, True)
         elif outcome == "finished":
-            await asyncio.to_thread(record_result, msg_id, False)
+            # (counted on the side, so the next song starts without waiting on the database)
+            asyncio.create_task(_record_finished(msg_id))
         elif outcome == "interrupted":
             print(f"Faded out track {msg_id} for " + ("a host going live" if LIVE.on_air() else "a scheduled studio item"))
         else:

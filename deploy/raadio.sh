@@ -10,6 +10,7 @@
 #   raadio restart [what]     restart controller (default), icecast or nginx
 #   raadio deploy             what a push to main does: pull, rebuild, update the website
 #   raadio nginx [--apply]    compare the server's Nginx files with the repo / install them
+#   raadio net [--apply]      TCP settings: show them / switch BBR on (steadier streams)
 #   raadio backup             copy the database and Telegram session to ~/raadio-backups
 #   raadio users ...          studio accounts: list | add <name> | passwd <name> | remove <name>
 set -euo pipefail
@@ -127,8 +128,9 @@ case "${1:-}" in
   restart) restart "${2:-}" ;;
   deploy) bash "$REPO/deploy/deploy.sh" ;;
   nginx) shift; sudo bash "$REPO/deploy/nginx/install.sh" "$@" ;;
+  net) shift; sudo bash "$REPO/deploy/net.sh" "$@" ;;
   backup) backup ;;
   users) shift; dc exec controller python /app/controller/manage_users.py "$@" ;;
-  help|-h|--help) sed -n '2,14p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed 's/^# \{0,1\}//' ;;
+  help|-h|--help) sed -n '2,15p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed 's/^# \{0,1\}//' ;;
   *) echo "Unknown: $1. Try: raadio help" >&2; exit 1 ;;
 esac

@@ -938,6 +938,8 @@
         if (!weak.low) { if (now - weak.upAt > 600000) weak.need = 10000; return; }
         if (prefer !== "high") { weak.low = false; return; }
         if (weak.busy() || now - Math.max(weak.last, weak.downAt) < weak.need) return;
+        // (not in the background: the trial's second stream starved the one playing)
+        if (document.hidden) return;
         var net = navigator.connection;
         if (net && ((net.downlink && net.downlink < 0.35) || /(^|-)2g$/.test(net.effectiveType || ""))) return;
         weak.low = false; weak.upAt = now;
@@ -1066,6 +1068,12 @@
     }
 
     document.addEventListener("visibilitychange", function () {
+      // gone to the background mid-skip: let the music play on, unmuted and at speed 1
+      // (Chrome on Android pauses a muted stream in the background, and it stayed silent)
+      if (document.hidden && wanted) {
+        if (rushTimer) { clearInterval(rushTimer); rushTimer = 0; setRate(cur, 1); }
+        try { if (cur.muted) cur.muted = false; } catch (e) { /* ignore */ }
+      }
       if (document.visibilityState === "visible" && wanted && !connecting && !audible(cur)) connect("resume");
     });
     window.addEventListener("online", function () { if (wanted && !connecting) connect("online"); emit("online"); });
@@ -1573,6 +1581,16 @@
       });
     }
     function list() { return tx("readonly", function (st) { return st.getAll(); }); }
+    function prune() {
+      return tx("readwrite", function (st) {
+        var cut = Date.now() / 1000 - KEEP_S;
+        st.openCursor().onsuccess = function (e) { var c = e.target.result; if (c && c.key < cut) { c.delete(); c.continue(); } };
+      });
+    }
+    // pieces left from an earlier visit go once they're over 3 hours old
+    if (window.indexedDB && indexedDB.databases) setTimeout(function () {
+      indexedDB.databases().then(function (l) { if (l.some(function (d) { return d.name === DB; })) return prune(); }).catch(function () {});
+    }, 5000);
     function save(p) {
       if (!p || !p.chunks.length || p.secs < 5) return Promise.resolve();
       var blob = new Blob((ogg ? heads : []).concat(p.chunks), { type: ogg ? "audio/ogg" : "audio/mpeg" });
@@ -1681,19 +1699,26 @@
     function playTape() {
       if (tapeOn) return;
       list().then(function (all) {
-        all = all.filter(function (p) { return p.blob && p.blob.size; });
+        // only what was saved in the last 3 hours (older pieces stayed on the device until the
+        // next save pruned them: a piece from days ago played as "live" whenever the stream
+        // hiccupped in the background, the same song every time)
+        var cut = Date.now() / 1000 - KEEP_S;
+        all = all.filter(function (p) { return p.blob && p.blob.size && p.at >= cut; });
         if (!all.length || tapeOn || !engine.isOn()) return;
         all.sort(function (a, b) { return a.at - b.at; });
+        // (a fresh drop starts on the newest piece: the minutes just before the line went)
+        if (Date.now() / 1000 - tapeAt > 15 * 60) tapeAt = all[all.length - 1].at;
         tapeOn = true;
         tuning.quiet(true);
         keepChip("Tape");
         tape = tape || new Audio();
         log.add("warn", "No connection: playing what was saved on this device");
         setStatus("Offline: playing the saved stream");
-        var i = Math.max(0, all.findIndex(function (p) { return p.at >= tapeAt; }));
+        var i = all.findIndex(function (p) { return p.at >= tapeAt; });
+        if (i < 0) i = all.length - 1;                           // (played through: the newest again, never the oldest)
         (function next() {
           if (!tapeOn) return;
-          if (i >= all.length) i = 0;                            // (round again)
+          if (i >= all.length) i = Math.max(0, all.length - 3);  // (round again over the last few minutes)
           var p = all[i++];
           tapeAt = p.at + 1;
           var url = URL.createObjectURL(p.blob);
@@ -1711,11 +1736,13 @@
       keepChip(on ? "Saving" : "");
       tuning.quiet(false);
       var t = tape, s0 = performance.now();
-      (function fade() {                                     // fade out under the live stream
+      // fade out under the live stream (a timer, not animation frames: those don't run while
+      // the app is in the background, so the tape used to play on over live there)
+      var ft = setInterval(function () {
         var k = Math.min(1, (performance.now() - s0) / 1200);
         try { t.volume = 1 - k; } catch (e) { /* iPhone: no volume */ }
-        if (k < 1) requestAnimationFrame(fade); else { t.pause(); t.removeAttribute("src"); try { t.load(); } catch (e) { /* ignore */ } }
-      })();
+        if (k >= 1 || document.hidden) { clearInterval(ft); t.onended = t.onerror = null; t.pause(); t.removeAttribute("src"); try { t.load(); } catch (e) { /* ignore */ } }
+      }, 30);
       log.add("ok", "Back to live");
       setStatus("Back to live");
     }
@@ -1800,8 +1827,12 @@
       }, function (err) { clearTimeout(t); throw err; });
   }
 
+  // (a press within this long of a skip going through is taken as the same press: a headset's
+  // or lock screen's presses can arrive late, all together, and skipped song after song)
+  var SKIP_COOLDOWN_MS = 10000, lastSkipAt = 0;
   function voteSkip(source) {
     if (voting) return;
+    if (Date.now() - lastSkipAt < SKIP_COOLDOWN_MS) { setStatus("Skipping…"); return; }
     if (!engine.isOn()) { setStatus("Press play to vote"); return; }
     if (voted) { setStatus("You voted — waiting for one more listener"); return; }
     voting = true;
@@ -1812,7 +1843,11 @@
     // This vote will surely skip (alone on the station, or the last one needed): tune away
     // from the old song on the tap itself instead of after the server's answer
     var myWeight = 1;
-    var sure = CONFIG.CONTINUOUS_STREAM && voteState.votes + myWeight >= voteState.needed;
+    // In the background (a skip from the notification or a headset) the old song just plays
+    // out its few seconds into the new one: Chrome on Android pauses a muted stream in the
+    // background and can't play the tuning sound there, so it went silent
+    var bg = document.hidden;
+    var sure = CONFIG.CONTINUOUS_STREAM && !bg && voteState.votes + myWeight >= voteState.needed;
     if (sure) { tuning.skip(engine.latency() + 2.5); }
 
     var order = [hosts.current()].concat(hosts.others());
@@ -1831,10 +1866,11 @@
       setStatus(data.message || "Vote sent");
       if (!data.skipped && sure) { tuning.cancelSkip(); }   // it didn't go through after all
       if (data.skipped) {
+        lastSkipAt = Date.now();
         resetVote();
         engine.skip();
         log.add("ok", "Track skipped by listeners");
-        if (CONFIG.CONTINUOUS_STREAM) {
+        if (CONFIG.CONTINUOUS_STREAM && !bg) {
           // The server has moved on, but this speaker is still a few seconds behind it.
           // Don't make the listener sit through the old song's tail: dip it under the
           // tuning sound now, and lock on to the next song the moment it arrives here.
