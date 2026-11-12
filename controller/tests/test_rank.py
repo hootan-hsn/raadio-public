@@ -1,7 +1,6 @@
 """Tiers: star, 1, 0, -1, blocked (rank.py)."""
 import sqlite3
 import sys
-import time
 from pathlib import Path
 
 import pytest
