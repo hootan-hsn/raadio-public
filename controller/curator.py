@@ -593,11 +593,13 @@ class Tiers:
 
     def list(self):
         with self._conn() as c:
-            rows = c.execute("""SELECT telegram_msg_id AS id, title, rank, star_until, skip_score, play_count, skip_count
+            rows = c.execute("""SELECT telegram_msg_id AS id, title, rank, star_until, skip_score, plays_w, score_at,
+                                       play_count, skip_count
                                 FROM track_stats ORDER BY title COLLATE NOCASE""").fetchall()
         now = time.time()
         return [{"id": r["id"], "title": r["title"] or f"Track {r['id']}", **self._row(r, now),
-                 "score": round(r["skip_score"] or 0, 1), "plays": r["play_count"] or 0,
+                 "score": round(rank.rate(rank.fade(r["skip_score"] or 0.0, r["score_at"], now),
+                                                  rank.fade(r["plays_w"] or 0.0, r["score_at"], now)), 2), "plays": r["play_count"] or 0,
                  "skips": r["skip_count"] or 0} for r in rows]
 
     def posters(self, per_song=None):
@@ -713,19 +715,24 @@ class Tiers:
         return {r["id"]: r["title"] for r in rows}
 
     def update(self, track_id, data, curator):
-        """{"tier": "star" | 1 | 0 | -1 | "blocked"}: set by hand. The score goes to the bottom
-        of the new tier, so listeners' likes and dislikes carry on from there; a star lasts
-        rank.STAR_DAYS from now; blocked stays until changed here again."""
+        """{"tier": "star" | 1 | 0 | -1 | "blocked"}: set by hand. The song starts just inside
+        the new tier, and listeners can't move it for rank.HAND_HOLD_DAYS; after that their
+        likes and dislikes carry on from there. A star lasts rank.STAR_DAYS from now; blocked
+        stays until changed here again."""
         if "tier" not in data:
             raise ValueError("Give a tier: star, 1, 0, -1 or blocked")
         k = rank.parse(data["tier"])
-        until = time.time() + rank.STAR_DAYS * 86400 if k == rank.STAR else None
         old = {rank.STAR: 1, 1: 1, 0: 2, -1: 3, rank.BLOCKED: 5}[k]
+        now = time.time()
         with self._conn() as c:
-            if c.execute("UPDATE track_stats SET rank = ?, star_until = ?, skip_score = ?, is_blacklisted = ?, tier = ? "
-                         "WHERE telegram_msg_id = ?",
-                         (k, until, rank.ANCHOR[k], 1 if k == rank.BLOCKED else 0, old, track_id)).rowcount == 0:
+            row = c.execute("SELECT plays_w, score_at FROM track_stats WHERE telegram_msg_id = ?", (track_id,)).fetchone()
+            if row is None:
                 raise LookupError("That song isn't in the radio's list")
+            plays = rank.fade(row["plays_w"] or 0.0, row["score_at"], now)
+            net, until, hold = rank.set_by_hand(k, plays, now)
+            c.execute("UPDATE track_stats SET rank = ?, star_until = ?, skip_score = ?, plays_w = ?, score_at = ?, "
+                      "hold_until = ?, is_blacklisted = ?, tier = ? WHERE telegram_msg_id = ?",
+                      (k, until, net, plays, now, hold, 1 if k == rank.BLOCKED else 0, old, track_id))
         print(f"Curator {curator}: track {track_id} -> tier {rank.NAMES[k]}")
         if self.on_change:
             self.on_change()
