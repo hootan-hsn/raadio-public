@@ -76,15 +76,23 @@ Every song is in one of five tiers (`controller/rank.py`). Nothing in them is fo
 | Tier | How a song gets there | How often it plays |
 | --- | --- | --- |
 | ★ Star | Many recent likes, pinned in the channel, newly posted, or set by hand. **Lasts two weeks, then the song is tier 1.** | Every round, an extra turn, and the priority slot every few songs |
-| 1 | Liked (score at or below -1.5), or a star whose two weeks are up | Every round |
+| 1 | Liked (rate at or below -0.08), or a star whose two weeks are up | Every round |
 | 0 | Where every song starts | 60% of rounds |
-| -1 | Disliked (score 1.5 or more) | 25% of rounds |
-| Blocked | Disliked a lot (score 4), or set by hand. **Stays blocked until someone changes it by hand.** | Never |
+| -1 | Disliked (rate 0.25 or more) | 25% of rounds |
+| Blocked | Disliked a lot (rate 0.6 or more), or set by hand. **Stays blocked until someone changes it by hand.** | Never |
 
-Each dislike that skips a song adds 1 to its score, each like takes off 0.25 and each play to the
-end 0.5. About five recent likes make a star. Curators can put any song in any tier from the
+How listeners move a song: each dislike that skips it adds 1 to its net (less when the
+disliker was alone, or when most of the song had played), each like takes off 1, each play to
+the end takes off 0.1. Net and plays both fade by half every 30 days, so old opinions wear off
+and a song can climb back. The tier comes from the rate, net / (plays + 8): a song with few
+plays stays near 0, and a busy song isn't judged harder for collecting more votes. Each
+listener counts once per song per day (kept hashed in `song_votes`, never as an address).
+A song that moves starts a little inside its new tier, not on the edge, and stays at least
+3 days before listeners can move it again; moving down also needs dislikes from 3 different
+listeners. About five recent likes (each fading by half in three weeks) make a song a star.
+Curators can put any song in any tier from the
 studio's Rotation tile (`POST /api/curator/tracks/{id}` with `{"tier": "star" | 1 | 0 | -1 |
-"blocked"}`); its score then starts at the bottom of that tier.
+"blocked"}`); it then starts just inside that tier and stays a week before listeners can move it.
 
 A dislike is the skip vote: enough of them and the song fades out and the next one starts. The
 vote's reply says when (`lands_at`), and the player plays a tuning sound until then, the same

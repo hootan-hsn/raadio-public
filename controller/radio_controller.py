@@ -149,10 +149,7 @@ WATCHDOG_AFTER = 8             # seconds without audio sent before the watchdog 
 
 # ---- Tiers: star, 1, 0, -1, blocked (see rank.py) --------------------
 import rank                    # noqa: E402
-SKIP_PENALTY = 1.0             # added to score for a dislike that skips a song
 LOVE_HALF_DAYS = 21            # likes fade by half in three weeks
-FINISH_CREDIT = 0.5            # removed from score when a song plays to the end
-LIKE_CREDIT = 0.25             # removed from score for each listener's thumbs-up (the reverse of a skip)
 
 # ---- Raw audio between the decoders and the encoder ------------------
 SAMPLE_RATE = 44100
@@ -200,6 +197,7 @@ current_wave_key = None         # key for /api/wave/{key}: the player's waveform
 VIBE = VibeCache()
 current_is_show = False        # a scheduled studio item is on air (can't be vote-skipped)
 skip_votes = {}                # "ip|device" (or "user:name") -> (time of the vote, its weight)
+skip_who = []                  # who disliked the song being skipped (for rank.count_vote)
 song_likes = set()             # who gave the song on air a thumbs-up (one each per song)
 recent_aired = []              # the songs before this one, newest first: {title, artist, started}
 
@@ -337,28 +335,45 @@ def log_track_start(msg_id, title, reason="rotation"):
         """, (msg_id, title))
 
 
-def _write_rank(conn, msg_id, r, score, star_until):
-    """Save a song's tier (and the old columns other readers still look at)."""
-    conn.execute("UPDATE track_stats SET rank = ?, skip_score = ?, star_until = ?, is_blacklisted = ?, "
-                 "tier = ? WHERE telegram_msg_id = ?",
-                 (r, score, star_until, 1 if r == rank.BLOCKED else 0,
-                  {rank.STAR: 1, 1: 1, 0: 2, -1: 3, rank.BLOCKED: 5}[r], msg_id))
+_STATE = "skip_score, plays_w, score_at, rank, star_until, hold_until"
 
 
-def record_result(msg_id, skipped, weight=1.0):
+def _state(row):
+    return {"net": row[0] or 0.0, "plays": row[1] or 0.0, "at": row[2], "rank": row[3] or 0,
+            "star_until": row[4], "hold_until": row[5]}
+
+
+def _write_rank(conn, msg_id, st):
+    """Save a song's tier and its fading net and plays (and the old columns other readers
+    still look at)."""
+    r = st["rank"]
+    conn.execute("UPDATE track_stats SET rank = ?, skip_score = ?, plays_w = ?, score_at = ?, star_until = ?, "
+                 "hold_until = ?, is_blacklisted = ?, tier = ? WHERE telegram_msg_id = ?",
+                 (r, st["net"], st["plays"], st["at"], st["star_until"], st["hold_until"],
+                  1 if r == rank.BLOCKED else 0, {rank.STAR: 1, 1: 1, 0: 2, -1: 3, rank.BLOCKED: 5}[r], msg_id))
+    if st.get("moved") is not None:
+        print(f"Track {msg_id}: tier {rank.NAMES[st['moved']]} -> {rank.NAMES[r]}")
+
+
+def record_result(msg_id, skipped, weight=1.0, who=()):
     """A dislike that skipped the song (weight: how much it counts; a lone listener's, or one
-    late in the song, counts less) or a play to the end: the score moves, and the tier with it."""
+    late in the song, counts less; who: the listeners who disliked it, each counted once a
+    day) or a play to the end. See rank.step for how the tier follows."""
     with db() as conn:
-        row = conn.execute("SELECT skip_score, rank, star_until FROM track_stats WHERE telegram_msg_id = ?",
-                           (msg_id,)).fetchone()
+        row = conn.execute(f"SELECT {_STATE} FROM track_stats WHERE telegram_msg_id = ?", (msg_id,)).fetchone()
         if not row:
             return
-        score = rank.clamp((row[0] or 0.0) + (SKIP_PENALTY * weight if skipped else -FINISH_CREDIT))
-        r, until = rank.settle(row[1] or 0, score, row[2])
-        _write_rank(conn, msg_id, r, score, until)
+        if skipped:
+            who = list(who)
+            new = sum(1 for v in who if rank.count_vote(conn, msg_id, v, "dislike"))
+            add = rank.DISLIKE * weight * (new / len(who) if who else 1.0)
+        else:
+            add = rank.FINISH
+        st = rank.step(_state(row), add, played=True, voters=rank.voters(conn, msg_id))
+        _write_rank(conn, msg_id, st)
         if skipped:
             conn.execute("UPDATE track_stats SET skip_count = skip_count + 1 WHERE telegram_msg_id = ?", (msg_id,))
-    print(f"Track {msg_id}: score={score:.2f}, tier {rank.NAMES[r]}")
+    print(f"Track {msg_id}: rate={rank.rate(st['net'], st['plays']):+.2f}, tier {rank.NAMES[st['rank']]}")
 
 
 def love_of(love, love_at, now=None):
@@ -369,24 +384,27 @@ def love_of(love, love_at, now=None):
 
 
 def load_track_info():
-    """(blocked ids, id -> tier, id -> score) from the database. Stars whose two weeks are up
+    """(blocked ids, id -> tier, id -> rate) from the database. Stars whose two weeks are up
     become tier 1 here."""
+    now = time.time()
     with db() as conn:
-        n = conn.execute("UPDATE track_stats SET rank = 1, star_until = NULL, skip_score = MAX(COALESCE(skip_score, 0), ?), tier = 1 "
-                         "WHERE rank = ? AND (star_until IS NULL OR star_until <= ?)",
-                         (rank.SCORE_MIN, rank.STAR, time.time())).rowcount
-        rows = conn.execute("SELECT telegram_msg_id, rank, is_blacklisted, skip_score FROM track_stats").fetchall()
-    if n:
-        print(f"Star time over: {n} song(s) back to tier 1")
+        expired = conn.execute(f"SELECT telegram_msg_id, {_STATE} FROM track_stats "
+                               "WHERE rank = ? AND (star_until IS NULL OR star_until <= ?)", (rank.STAR, now)).fetchall()
+        for row in expired:
+            _write_rank(conn, row[0], rank.step(_state(row[1:]), now=now))
+        rank.prune_votes(conn, now)
+        rows = conn.execute("SELECT telegram_msg_id, rank, skip_score, plays_w, score_at FROM track_stats").fetchall()
+    if expired:
+        print(f"Star time over: {len(expired)} song(s) back to tier 1")
     banned = {r[0] for r in rows if r[1] == rank.BLOCKED}
     ranks = {r[0]: (r[1] if r[1] is not None else 0) for r in rows}
-    scores = {r[0]: (r[3] or 0.0) for r in rows}
-    return banned, ranks, scores
+    rates = {r[0]: rank.rate(rank.fade(r[2] or 0.0, r[4], now), rank.fade(r[3] or 0.0, r[4], now)) for r in rows}
+    return banned, ranks, rates
 
 
 def mark_stars(ids_until):
     """{id: until}: songs pinned in the channel or newly posted become stars until then (not
-    a blocked song, and not one already a star for longer)."""
+    a blocked song, and not one already a star for longer). Their net and plays carry on."""
     if not ids_until:
         return 0
     now, n = time.time(), 0
@@ -394,13 +412,14 @@ def mark_stars(ids_until):
         for mid, until in ids_until.items():
             if until <= now:
                 continue
-            row = conn.execute("SELECT rank, star_until, skip_score FROM track_stats WHERE telegram_msg_id = ?", (mid,)).fetchone()
+            row = conn.execute("SELECT rank, star_until FROM track_stats WHERE telegram_msg_id = ?", (mid,)).fetchone()
             if row is None:
                 conn.execute("INSERT OR IGNORE INTO track_stats (telegram_msg_id) VALUES (?)", (mid,))
-                row = (0, None, 0.0)
+                row = (0, None)
             if row[0] == rank.BLOCKED or (row[0] == rank.STAR and (row[1] or 0) >= until):
                 continue
-            _write_rank(conn, mid, rank.STAR, row[2] or 0.0, until)
+            conn.execute("UPDATE track_stats SET rank = ?, star_until = ?, is_blacklisted = 0, tier = 1 "
+                         "WHERE telegram_msg_id = ?", (rank.STAR, until, mid))
             n += 1
     return n
 
@@ -952,21 +971,20 @@ async def votes_needed():
     return SKIP_VOTES_NEEDED
 
 
-def like_result(msg_id):
-    """A like: the score comes down a little (the reverse of a dislike), and enough recent
-    likes (rank.STAR_LOVE, each fading over weeks) make the song a star for two weeks."""
+def like_result(msg_id, who=None):
+    """A like (each listener's counts once a day): net comes down by as much as a dislike
+    puts it up, and enough recent likes (rank.STAR_LOVE, each fading over weeks) make the
+    song a star for two weeks."""
     with db() as conn:
-        row = conn.execute("SELECT skip_score, rank, star_until, love, love_at FROM track_stats WHERE telegram_msg_id = ?",
+        row = conn.execute(f"SELECT {_STATE}, love, love_at FROM track_stats WHERE telegram_msg_id = ?",
                            (msg_id,)).fetchone()
-        if not row:
+        if not row or (who and not rank.count_vote(conn, msg_id, who, "like")):
             return
-        score = rank.clamp((row[0] or 0.0) - LIKE_CREDIT)
-        love = love_of(row[3], row[4]) + 1
-        r, until = rank.settle(row[1] or 0, score, row[2])
-        if love >= rank.STAR_LOVE and r not in (rank.STAR, rank.BLOCKED):
-            r, until = rank.STAR, time.time() + rank.STAR_DAYS * 86400
-            print(f"Track {msg_id}: a star for {rank.STAR_DAYS} days (liked by many)")
-        _write_rank(conn, msg_id, r, score, until)
+        st = rank.step(_state(row), rank.LIKE, voters=rank.voters(conn, msg_id))
+        love = love_of(row[6], row[7]) + 1
+        if love >= rank.STAR_LOVE and st["rank"] not in (rank.STAR, rank.BLOCKED):
+            st.update(rank=rank.STAR, star_until=time.time() + rank.STAR_DAYS * 86400, moved=st["rank"])
+        _write_rank(conn, msg_id, st)
         conn.execute("UPDATE track_stats SET love = ?, love_at = ? WHERE telegram_msg_id = ?", (love, time.time(), msg_id))
 
 
@@ -993,7 +1011,7 @@ async def register_like(request: Request):
     elif skip_votes:                   # otherwise the newest vote against it
         del skip_votes[max(skip_votes, key=lambda k: skip_votes[k][0])]
         rescued = True
-    await asyncio.to_thread(like_result, current_track_id)
+    await asyncio.to_thread(like_result, current_track_id, who)
     AUDIENCE.event("like", current_track_id, client_ip)
     # (no addresses in the log: a leaked log mustn't say who listens, from Iran above all)
     print("Thumbs-up" + (" (took back a skip vote)" if rescued else ""))
@@ -1052,6 +1070,7 @@ async def register_skip_vote(request: Request):
         print(f"Skipping track globally: {current_track_title}")
         AUDIENCE.event("skip", current_track_id, None)
         skip_requested = True          # the play loop fades it out and moves on
+        skip_who[:] = list(skip_votes)  # (each counted once a day against the song)
         skip_votes.clear()
         fut = skip_turn["fut"] = asyncio.get_running_loop().create_future()
         lands_at = None
@@ -1359,7 +1378,7 @@ class TrackQueue:
                 await asyncio.to_thread(mark_stars, stars)
             except Exception as e:
                 print(f"Couldn't mark stars: {e}")
-        banned, ranks, scores = await asyncio.to_thread(load_track_info)
+        banned, ranks, rates = await asyncio.to_thread(load_track_info)
         # star songs (pinned, new, many likes) share the priority slot
         liked = [t for t in await channel_tracks() if ranks.get(t[0]) == rank.STAR
                  and not any(t[0] == f[0] for f in self.fresh) and not any(t[0] == p[0] for p in self.pinned)]
@@ -1373,8 +1392,8 @@ class TrackQueue:
         if pinned:
             return min(pinned, key=lambda t: self.last_played.get(t[0], 0))
         ok = [t for t in self.fresh
-              if due(t) and scores.get(t[0], 0.0) < rank.DOWN_AT]   # listeners keep disliking it: stop pushing
-        ok += [t for t in liked if due(t) and scores.get(t[0], 0.0) < rank.DOWN_AT and random.random() < 0.5]
+              if due(t) and rates.get(t[0], 0.0) < rank.DOWN_AT]   # listeners keep disliking it: stop pushing
+        ok += [t for t in liked if due(t) and rates.get(t[0], 0.0) < rank.DOWN_AT and random.random() < 0.5]
         if not ok:
             return None
         # the one that's waited longest; the newest upload first among never-played ones
@@ -2026,7 +2045,8 @@ async def radio_step(bc: Broadcaster, queue: TrackQueue, st):
             skip_turn["at"] = time.time() + bc.ahead() if outcome == "skipped" else 0.0
             fut.set_result(skip_turn["at"] or None)
         if outcome == "skipped":
-            await asyncio.to_thread(record_result, msg_id, True)
+            who, skip_who[:] = list(skip_who), []
+            await asyncio.to_thread(record_result, msg_id, True, 1.0, who)
         elif outcome == "finished":
             # (counted on the side, so the next song starts without waiting on the database)
             asyncio.create_task(_record_finished(msg_id))
