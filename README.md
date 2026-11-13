@@ -103,6 +103,41 @@ Firefox (`OggToWebm`, no re-encoding), so it can land a skip as soon as it choos
 first 5 s of the next are cut, and the two overlap for 5 s (`BLEND` in the controller; songs
 under 30 s play whole).
 
+## Flamingos
+
+The flamingo is Raadio's bird. Now and then one flies in and lands on the radio; a listener who
+taps it can leave a note of up to 55 letters (`controller/notes.py`). Every 150-360 s the station
+picks a waiting note and a flamingo skywrites it across every listener's screen at once (`sky` in
+`/now-playing`). A note lives 2 hours; once 7 are waiting the sky is full: notes last an hour,
+new ones are refused and no flamingos come round until there's room. Each address can send one
+note every 45 s and 8 an hour (counted in memory, never stored). Notes are checked against a
+list of words that can't be printed (English, Finglish and Farsi, as whole words and as the
+start of longer ones); studio users can edit, remove or add notes and words.
+
+## Algorithms
+
+- **Skip votes:** a dislike lasts 90 s (`VOTE_WINDOW`); 2 different listeners within that time
+  skip the song (`SKIP_VOTES_NEEDED`), or one when Icecast says they're alone.
+- **Tiers** (`controller/rank.py`): net and plays fade as `x · 0.5^(days / 30)`;
+  `rate = net / (plays + 8)`; tier 1 at ≤ −0.08, −1 at ≥ 0.25, blocked at ≥ 0.6. After a move the
+  song is rebased 0.05 inside its new tier and held 3 days (7 by hand). Listener keys are
+  sha256 with a salt kept in the database, one vote per song per day, deleted after 30 days.
+- **Loudness:** each file is measured once with FFmpeg's `ebur128` and played with a fixed gain
+  to −14 LUFS, then a peak limiter. No EQ or compression, so songs sound as uploaded.
+- **Blend:** the last and first 5 s are cut and overlapped with equal-power fades, so the level
+  holds through the change.
+- **In sync:** `/now-playing` carries the encoder's clock (`edge`, `clock`), so each player knows
+  which moment it's hearing and turns `lands_at` into its own time.
+
+## AWS
+
+`infra/` is Terraform for one EC2 server: a security group with only 22, 80 and 443 open (the
+app and Icecast stay on 127.0.0.1), an Elastic IP, a CloudWatch alarm that moves the server to
+healthy hardware when AWS's status check fails, and an optional monthly budget alert by email.
+The server is never rebuilt (`prevent_destroy`, AMI and user data ignored). State goes in a
+private, versioned S3 bucket you create. CI only runs `terraform fmt` and `validate`; it never
+touches your AWS account.
+
 ## Run it
 
 Two ways in: just listen at [raadio.xyz](https://raadio.xyz) — nothing to install — or run
