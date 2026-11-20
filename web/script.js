@@ -283,13 +283,14 @@
     var gen = 0, held = null, holdTimer = null, fadeTimer = null;
     var lastTime = 0, lastAdvance = 0, lastBufEnd = 0, lastGrow = 0;
     var interrupted = 0, intTimer = 0;     // when the phone paused us (see the "pause" listener)
-    var bufDelay = 7; // seconds buffered ahead (burst = start threshold + 3 s); set from the stream on each connect (resetWatch)
+    var bufDelay = 7; // seconds buffered ahead (Icecast's burst, see streamInfo); set from the stream on each connect (resetWatch)
     // The moment being heard, on this device's clock, driven by the audio element's own
     // playback position: it moves exactly as the sound does (stops on a stall, speeds up
     // while catching up) instead of jumping whenever the delay estimate is corrected.
     // K links the two clocks and is nudged towards the estimate only very slowly.
     var hc = { el: null, k: 0, ct: -1, at: 0, shown: 0, last: 0, exact: false };
     function heardAt() {
+      if (synced && syncing()) return Date.now() / 1000;      // (the moment due now: see sync)
       // (straight from the stream when it can say: bufDelay starts each new connection at the
       // burst's size on paper, which for Opus is 1.5-2 s off, and the drift below took a
       // minute to make that up: the music ran ahead of the timeline after every reconnect)
@@ -345,7 +346,8 @@
       });
       // ran out of audio (slow network, dropped connection): say so at once, so the tuning
       // sound covers the gap instead of silence
-      el.addEventListener("waiting", function () { if (el === cur && wanted && !connecting && el.src !== keep.src) starve(true); });
+      // (not our own jump into step with everyone, see sync: the player waits a moment there)
+      el.addEventListener("waiting", function () { if (el === cur && wanted && !connecting && el.src !== keep.src && !(el._sought && performance.now() - el._sought < 1500)) starve(true); });
       el.addEventListener("playing", function () { if (el === cur) starve(false); });
       // The phone paused us: another app made a sound (a video, a voice message), a call came
       // in, the headphones came out. This used to count as pressing stop, so the radio stayed
@@ -382,7 +384,7 @@
       if (on === starving) return;
       starving = on;
       if (on) stallAt = Date.now();
-      else if (stallAt) { weak.stalled(Date.now() - stallAt); stallAt = 0; }
+      else if (stallAt) { if (!(cur._sought && performance.now() - cur._sought < 1500)) weak.stalled(Date.now() - stallAt); stallAt = 0; }
       emit(on ? "stall" : "flow");
     }
     function emit(evt, data) { (handlers[evt] || []).forEach(function (fn) { try { fn(data); } catch (e) { console.error(e); } }); }
@@ -425,17 +427,18 @@
     if (startLow) quality = "saver";
     var liteWorked = false;
     function lite() { return quality === "saver"; }
-    // The burst Icecast sends a new listener (deploy/icecast): what browsers wait for before
-    // they start playing, plus 3 s. In seconds it's exact for MP3; Opus's bitrate varies, and
-    // with the Ogg pages its bursts hold less than their bytes say: measured against the
-    // encoder's clock, ~6.0 s for HQ (not 7) and ~10.1 s for Saver (not 11; 8.3-11.5 with the
-    // music). Only players without that clock (Safari) go by these, and on paper they put
-    // the music ~1.7 s ahead of the timeline after every HQ connection.
+    // The burst Icecast sends a new listener (deploy/icecast). MP3: what browsers wait for
+    // before they start playing, plus 3 s; in seconds that's exact. Opus: ~28 s more on top,
+    // the buffer that carries the music through a dropped connection (see feed); Opus's
+    // bitrate varies, and with the Ogg pages its bursts hold less than their bytes say
+    // (measured against the encoder's clock: 56 KB was ~6.0 s for HQ, not 7, and 44 KB ~10.1 s
+    // for Saver, not 11; the rest at ~8.4 KB/s and ~4.2 KB/s). Only players without that clock
+    // go by these figures.
     function streamInfo(url) {
       var ogg = /\.opus/.test(url), small = /-lite\./.test(url);
       var kbit = ogg ? (small ? 32 : 64) : (small ? 64 : 128);
-      var bytes = ogg ? (small ? 44000 : 56000) : (small ? 152000 : 176000);
-      return { ogg: ogg, kbit: kbit, bytes: bytes, burst: ogg ? (small ? 10.1 : 6.0) : bytes * 8 / 1000 / kbit };
+      var bytes = ogg ? (small ? 128000 : 256000) : (small ? 152000 : 176000);
+      return { ogg: ogg, kbit: kbit, bytes: bytes, burst: ogg ? (small ? 30.1 : 29.8) : bytes * 8 / 1000 / kbit };
     }
     function burstSeconds() { return streamInfo(streamUrl()).burst; }
     function streamUrl() {
@@ -462,7 +465,7 @@
     // The server's /now-playing gives: `edge`, how far each stream's newest audio runs ahead
     // of its due time (the controller keeps ~1 s queued in front of real time), and `clock`,
     // when the encoder's first sample was due. started_at and the waveform are due times.
-    var srv = { edge: null, clock: null, off: 0, rtt: 1e9, at: 0 };
+    var srv = { edge: null, clock: null, off: 0, rtt: 1e9, at: 0, sync: null };
     function edgeOf(el) {
       var e = srv.edge && (el && el._ogg ? srv.edge.opus : srv.edge.mp3);
       return typeof e === "number" ? e : -CONFIG.SERVER_DELAY_S;     // (older server: its `delay`)
@@ -483,12 +486,84 @@
     var MP3_SHIFT = 0.015;
     function heardDue(el) {
       if (!el || !el._t0 || !(el.currentTime > 0 || (el._g0 != null && el.readyState >= 2))) return null;
-      if (onClock(el)) return srv.clock + srv.off + el.currentTime;
-      if (el._ogg && el._g0 != null && srv.clock != null) return srv.clock + srv.off + el._g0 + el.currentTime;   // (see openStream)
+      var sp = streamPos(el);
+      if (sp != null) return srv.clock + srv.off + sp - cutsBefore(sp);   // (see openStream; cuts: see sync)
       // (MP3 really plays a little further along than its bytes say: measured against Opus's
       // exact clock; mostly the part-frame it skips at the burst's start)
       return el._t0 + el._edge0 - el._burst + (el.currentTime - el._ct0) + (el._ogg ? 0 : MP3_SHIFT);
     }
+    // ---- Everyone hears the same moment (the server's SYNC) ----
+    // The station runs `lead` seconds ahead of what's heard, and every player plays the moment
+    // due now on the station's clock (its own clock set by srv.off): so all of them play the
+    // same moment together, each with `lead` seconds in hand. A skip is a cut: at `at` everyone
+    // jumps from stream second `from` to `to`, and the clock loses `shift` from there on.
+    // Players on the encoder's clock (Opus: fed in, or Safari's side clock) can do this; MP3
+    // plays on by itself as before.
+    // where this player is: seconds into the encoder's stream (null: it can't tell)
+    function streamPos(el) {
+      if (!el || !el._ogg || srv.clock == null) return null;
+      if (el._feed || onClock(el)) return el.currentTime;
+      if (el._g0 != null) return el._g0 + el.currentTime;
+      return null;
+    }
+    function setPos(el, sp) {
+      try { el.currentTime = el._feed || onClock(el) ? sp : sp - el._g0; } catch (e) { /* ignore */ }
+      lastTime = 0;                                   // (the watchdog: a jump back isn't a stall)
+    }
+    // what the cuts before stream second sp took off the clock
+    function cutsBefore(sp) {
+      var y = srv.sync;
+      if (!y) return 0;
+      var z = y.before || 0;
+      for (var i = 0; i < y.cuts.length; i++) if (y.cuts[i].to <= sp) z += y.cuts[i].shift;
+      return z;
+    }
+    // where everyone is now (stream seconds)
+    function syncTarget() {
+      var y = srv.sync, now = Date.now() / 1000, z = y.before || 0;
+      for (var i = 0; i < y.cuts.length; i++) if (y.cuts[i].at + srv.off <= now) z += y.cuts[i].shift;
+      return now - srv.off - srv.clock + z;
+    }
+    var synced = false, nudging = false;
+    function syncing() { return !!srv.sync && srv.clock != null && streamPos(cur) != null; }
+    setInterval(function () {
+      if (!srv.sync || srv.clock == null || !wanted || connecting || held || fadeTimer || weak.op) return;
+      var el = cur;
+      if (!audible(el)) return;
+      var sp = streamPos(el);
+      if (sp == null) { synced = false; return; }
+      var t = syncTarget(), err = sp - t, now = performance.now();
+      if (el._sought && now - el._sought < 400) return;      // (a jump is still landing)
+      // A jump lands a little late (the player has to start again from there), and by how much
+      // differs: each one learns from the last, so the next lands on time.
+      if (el._sought && !el._learnt) {
+        el._learnt = true;
+        if (Math.abs(err) < 0.5) el._lead = clamp((el._lead || 0) - err, -0.1, 0.4);
+      }
+      if (Math.abs(err) > 0.06) {
+        // off by more than a hair (just started, a cut, back from a stall): jump there, if it's
+        // in hand. (Not in hand: what everyone hears now never came here, or a relay sends
+        // too little; it plays on by itself.)
+        var b = el.buffered;
+        if (b.length && t >= b.start(0) && t <= bufferedEnd(el) - 0.5) {
+          setPos(el, t + (el._lead != null ? el._lead : el._feed ? 0.03 : seekLead));
+          el._sought = now; el._learnt = false;
+          if (!synced) emit("synced", { by: err });
+          synced = true;
+        } else synced = false;
+        if (nudging) { nudging = false; try { el.playbackRate = 1; } catch (e) { /* ignore */ } }
+        return;
+      }
+      synced = true;
+      // a few hundredths off (the devices' sound clocks run a hair apart): 0.2% faster or
+      // slower until it's back (a pitch change of 3 cents, too small to hear: a semitone is 100)
+      if (!nudging && Math.abs(err) > 0.012) nudging = true;
+      else if (nudging && Math.abs(err) < 0.004) nudging = false;
+      var r = nudging && rateWorks ? (err > 0 ? 0.998 : 1.002) : 1;
+      if (r !== 1) { try { el.preservesPitch = false; el.webkitPreservesPitch = false; el.mozPreservesPitch = false; } catch (e) { /* ignore */ } }
+      if (el.playbackRate !== r) { try { el.playbackRate = r; } catch (e) { /* ignore */ } }
+    }, 50);
+
     // Safari plays Opus from 0, not on the encoder's clock (see onClock), so it can't say which
     // moment it's playing: the timeline went by the burst's size, which varies with the music,
     // and switching HQ <-> Saver couldn't be lined up (it jumped ~4.5 s). The stream itself can
@@ -678,17 +753,27 @@
     var mseWorked = false;
     var MSE_NEED = 1.5;              // seconds in hand a skip lands with (Safari plays on with less)
     var MSE_COMFY = 5;               // ...and how much it builds back up to afterwards (see the watchdog)
+    // When the connection breaks (a tunnel, a lift, a phone between masts) the music plays on
+    // from what's in hand while the feed quietly connects again. Icecast hands every new
+    // listener its burst (~28 s of Opus, deploy/icecast), and passes the encoder's Ogg pages
+    // through untouched, numbered: so the new connection's pages after the last one that
+    // arrived carry on exactly where it broke off, with nothing lost or played twice. Only
+    // when the break outlasted the burst (or the station restarted: a new stream) does it give
+    // up, and the watchdog reconnects as before.
+    var RESUME_QUIET_MS = 8000;      // nothing arriving for this long: the connection is dead (each new one costs a burst)
     function feed(el, url) {
-      var ms = new MediaSource(), ctrl = new AbortController(), q = [], sb = null, head = new Uint8Array(0);
+      var ms = new MediaSource(), ctrl = null, q = [], sb = null, head = new Uint8Array(0);
       var remux = /webm/.test(MSE_TYPE) ? OggToWebm() : null;
       function add(bytes) { if (!remux) { q.push(bytes); return; } var w = remux.push(bytes); for (var k = 0; k < w.length; k++) q.push(w[k]); }
       var g0 = null, offsetSet = false, started = false;
-      var f = el._feed = { done: false, stopped: false, stop: function () {
+      var serial = null, lastSeq = -1, joining = false, rest = new Uint8Array(0), quiet = 0, tries = 0, retry = 0;
+      var f = el._feed = { done: false, stopped: false, resuming: false, stop: function () {
         if (f.stopped) return;
         f.stopped = true;
-        try { ctrl.abort(); } catch (e) { /* ignore */ }
+        clearTimeout(quiet); clearTimeout(retry);
+        try { if (ctrl) ctrl.abort(); } catch (e) { /* ignore */ }
         try { URL.revokeObjectURL(f.url); } catch (e) { /* ignore */ }
-      } };
+      }, now: function () { if (f.resuming && !f.stopped) { clearTimeout(retry); tries = 0; reopen(); } } };
       function broke() { if (f.stopped || el._feed !== f) return; f.stop(); el.dispatchEvent(new Event("error")); }
       el._t0 = 0;
       el.src = f.url = URL.createObjectURL(ms);
@@ -721,31 +806,98 @@
         sb.addEventListener("error", broke);
         pump();
       }, { once: true });
-      fetch(url, { cache: "no-store", signal: ctrl.signal }).then(function (res) {
-        if (!res.ok || !res.body || !res.body.getReader) { broke(); return; }
-        var rd = res.body.getReader();
-        (function more() {
-          rd.read().then(function (r) {
-            if (f.stopped) return;
-            if (r.done) { f.done = true; return; }                       // (the watchdog takes it from there)
-            if (g0 == null) {
-              var b = new Uint8Array(head.length + r.value.length);
-              b.set(head); b.set(r.value, head.length); head = b;
-              var g = firstPage(head);
-              if (g === undefined) { if (head.length > 262144) broke(); else more(); return; }
-              g0 = g; add(head); head = null;
-              // (what loadedmetadata says for a stream the browser fetches itself)
-              var nowS = Date.now() / 1000, info = streamInfo(url);
-              el._t0 = el._req && srv.rtt < 5 ? Math.min(nowS, el._req + srv.rtt / 2) : nowS;
-              el._ogg = true; el._kbit = info.kbit; el._burstBytes = info.bytes; el._burst = info.burst;
-              el._edge0 = edgeOf(el); el._ct0 = g0;
-            } else add(r.value);
-            el.dispatchEvent(new Event("progress"));
-            pump();
-            more();
-          }, function () { if (!f.stopped) f.done = true; });
-        })();
-      }, broke);
+      // whole Ogg pages out of the bytes as they come; each new one of this stream goes in
+      // (a reconnection starts with the stream's header pages and a burst that mostly arrived
+      // already: those are skipped by their page number). false: it can't carry on.
+      function pages(bytes) {
+        var b = new Uint8Array(rest.length + bytes.length); b.set(rest); b.set(bytes, rest.length);
+        var i = 0, ok = true;
+        while (i + 27 <= b.length) {
+          if (b[i] !== 79 || b[i + 1] !== 103 || b[i + 2] !== 103 || b[i + 3] !== 83) { i++; continue; }   // "OggS"
+          var n = b[i + 26], body = i + 27 + n, size = 0;
+          if (body > b.length) break;
+          for (var k = 0; k < n; k++) size += b[i + 27 + k];
+          if (body + size > b.length) break;
+          var sn = (b[i + 14] | b[i + 15] << 8 | b[i + 16] << 16 | b[i + 17] << 24) >>> 0;
+          var seq = (b[i + 18] | b[i + 19] << 8 | b[i + 20] << 16 | b[i + 21] << 24) >>> 0;
+          if (serial == null) serial = sn;
+          if (sn !== serial) { ok = false; break; }                      // (a new stream: the station restarted)
+          if (seq > lastSeq) {
+            if (joining && seq !== lastSeq + 1) { ok = false; break; }   // (pages missing: the break outlasted the burst)
+            joining = false; lastSeq = seq;
+            add(b.subarray(i, body + size).slice());
+          }
+          i = body + size;
+        }
+        rest = b.slice(i);
+        return ok;
+      }
+      function giveUp(why) {
+        f.resuming = false; f.done = true; f.end = why;
+        try { if (ctrl) ctrl.abort(); } catch (e) { /* ignore */ }
+        emit("resumed", { ok: false, why: why, tries: tries });
+      }
+      function lost(why) {                                               // the connection ended: connect again
+        if (f.stopped || el._feed !== f) return;
+        clearTimeout(quiet);
+        try { if (ctrl) ctrl.abort(); } catch (e) { /* ignore */ }
+        if (g0 == null) { broke(); return; }                             // (never got going: as any failed start)
+        if (!f.resuming) {
+          f.resuming = true; f.lostAt = Date.now(); f.end = why; tries = 0;
+          emit("resuming", { how: !navigator.onLine ? "offline" : why, ahead: Math.round(ahead(el)) });
+        }
+        clearTimeout(retry);
+        retry = setTimeout(reopen, Math.min(3000, 400 + tries * 600));
+      }
+      function reopen() {
+        if (f.stopped || el._feed !== f) return;
+        tries++;
+        rest = new Uint8Array(0); joining = true;
+        connectFeed(url.replace(/([?&]t=)\d+/, "$1" + Date.now()));
+      }
+      function connectFeed(u) {
+        var my = ctrl = new AbortController(), resumed = !f.resuming;
+        function alive() {                                               // (a stalled connection never errors by itself)
+          clearTimeout(quiet);
+          quiet = setTimeout(function () { if (ctrl === my) lost("network"); }, RESUME_QUIET_MS);
+        }
+        alive();
+        fetch(u, { cache: "no-store", signal: my.signal }).then(function (res) {
+          if (ctrl !== my || f.stopped) return;
+          if (!res.ok || !res.body || !res.body.getReader) { if (g0 == null) broke(); else lost("server"); return; }
+          var rd = res.body.getReader();
+          (function more() {
+            rd.read().then(function (r) {
+              if (f.stopped || ctrl !== my) return;
+              if (r.done) { lost("server"); return; }
+              alive();
+              if (g0 == null) {
+                var b = new Uint8Array(head.length + r.value.length);
+                b.set(head); b.set(r.value, head.length); head = b;
+                var g = firstPage(head);
+                if (g === undefined) { if (head.length > 262144) broke(); else more(); return; }
+                g0 = g; pages(head); head = null;
+                // (what loadedmetadata says for a stream the browser fetches itself)
+                var nowS = Date.now() / 1000, info = streamInfo(url);
+                el._t0 = el._req && srv.rtt < 5 ? Math.min(nowS, el._req + srv.rtt / 2) : nowS;
+                el._ogg = true; el._kbit = info.kbit; el._burstBytes = info.bytes; el._burst = info.burst;
+                el._edge0 = edgeOf(el); el._ct0 = g0;
+              } else {
+                var had = lastSeq;
+                if (!pages(r.value)) { giveUp(f.end === "server" ? "server" : "gap"); return; }
+                if (!resumed && lastSeq > had) {                         // (carrying on: the music never stopped)
+                  resumed = true; f.resuming = false;
+                  emit("resumed", { ok: true, ms: Date.now() - f.lostAt, tries: tries });
+                }
+              }
+              el.dispatchEvent(new Event("progress"));
+              pump();
+              more();
+            }, function () { if (ctrl === my) lost("network"); });       // (the connection broke)
+          })();
+        }, function () { if (ctrl === my) { if (g0 == null) broke(); else lost("network"); } });
+      }
+      connectFeed(url);
     }
 
     // How far behind this stream's newest audio the playhead is: what has arrived here and
@@ -1073,6 +1225,11 @@
     var rushTimer = 0;
     function rush(at, done, waited) {
       clearInterval(rushTimer); rushTimer = 0;
+      if (synced && syncing()) {                     // (everyone jumps at the cut: land then)
+        var ms = Math.max(0, (at - Date.now() / 1000) * 1000);
+        rushTimer = setTimeout(function () { rushTimer = 0; done(); }, ms);
+        return ms / 1000;
+      }
       var el = cur, t0 = Date.now(), finished = false;
       function finish() {
         if (finished) return;
@@ -1098,11 +1255,13 @@
       rushTimer = setInterval(function () {
         if (el !== cur || !wanted || Date.now() - t0 > limit * 1000) { finish(); return; }
         var left = aim - heard();
-        if (!rateWorks || (el._ogg && el._g0 != null)) {                // (the side clock: Safari)
+        // (the side clock: Safari. Fed in: the new song may be ~28 s ahead in the buffer, too
+        // far to run up to in time even at 8x, and a fed-in stream seeks within it at once)
+        if (!rateWorks || el._feed || (el._ogg && el._g0 != null)) {
           if (seeked) { if (el.currentTime > seeked + 0.1) finish(); return; }   // (playing on from there: landed)
           if (left <= 0.3) { finish(); return; }
           var to = el.currentTime + left;
-          if (bufferedEnd(el) >= to + SEEK_NEED) { try { el.currentTime = to; seeked = to; } catch (e) { finish(); } }
+          if (bufferedEnd(el) >= to + (el._feed ? MSE_NEED : SEEK_NEED)) { try { el.currentTime = to; seeked = to; } catch (e) { finish(); } }
           return;
         }
         // (does the speed take? measured over a moment of asking for well above 1x)
@@ -1250,6 +1409,13 @@
         }
         if (op.paused) { var pp = op.play(); if (pp && pp.catch) pp.catch(function () {}); return; }
         var near = 0.006;
+        // (fed in, the new stream starts ~28 s back, at its burst's start: further behind than
+        // the music after a skip. It jumps ahead within what it has, then lines up as below)
+        if (op._feed && d > 1 && bufferedEnd(op) > op.currentTime + d + 1) {
+          try { op.currentTime += d; } catch (e) { /* ignore */ }
+          hist = []; ok = 0;
+          return;
+        }
         if (Math.abs(d) < near) {
           setRate(op, 1);
           if (++ok >= 6) swap();
@@ -1292,7 +1458,12 @@
       }
       if (document.visibilityState === "visible" && wanted && !connecting && !audible(cur)) connect("resume");
     });
-    window.addEventListener("online", function () { if (wanted && !connecting) connect("online"); emit("online"); });
+    window.addEventListener("online", function () {
+      // (fed in and still playing from the buffer: it reconnects right away and carries on)
+      if (wanted && cur._feed && cur._feed.resuming && audible(cur) && ahead(cur) > 1) cur._feed.now();
+      else if (wanted && !connecting) connect("online");
+      emit("online");
+    });
     window.addEventListener("offline", function () { emit("offline"); });
 
     return {
@@ -1310,18 +1481,21 @@
       server: function (d, tSend, tRecv) {
         if (d.edge && typeof d.edge.mp3 === "number" && typeof d.edge.opus === "number") srv.edge = d.edge;
         srv.clock = typeof d.clock === "number" ? d.clock : null;
+        srv.sync = d.sync && typeof d.sync.lead === "number" && Array.isArray(d.sync.cuts) ? d.sync : null;   // (with the clock: they go together)
         if (typeof d.now !== "number" || !(tRecv >= tSend)) return;
         var rtt = tRecv - tSend, nowS = Date.now() / 1000;
         if (rtt <= srv.rtt + 0.03 || nowS - srv.at > 60) { srv.rtt = rtt; srv.at = nowS; srv.off = (tSend + tRecv) / 2 - d.now; }
       },
       toDevice: function (t) { return t + srv.off; },
-      dbg: function () { var el = cur; return { lag: lag(el), safe: safeLag(el), onClock: onClock(el), ct0: el._ct0, ct: el.currentTime, edge0: el._edge0, burst: el._burst, srv: srv, delay: CONFIG.SERVER_DELAY_S, src: el.src, rate: el.playbackRate}; },
+      dbg: function () { var el = cur; return { sp: streamPos(el), target: srv.sync && srv.clock != null ? syncTarget() : null, synced: synced, lag: lag(el), safe: safeLag(el), onClock: onClock(el), ct0: el._ct0, ct: el.currentTime, edge0: el._edge0, burst: el._burst, srv: srv, delay: CONFIG.SERVER_DELAY_S, src: el.src, rate: el.playbackRate}; },
       isOn: function () { return wanted; },
       isPaused: function () { return !!interrupted || !audible(cur); },
       opus: function () { return useOpus; },
       // Seconds between a moment being due on the server and this listener hearing it:
       // this browser's buffer (smoothed, see the watchdog) less the stream's edge
-      latency: function () { return bufDelay - edgeOf(cur); },
+      latency: function () { return synced && syncing() ? 0 : bufDelay - edgeOf(cur); },
+      // everyone plays the same moment (see sync): a skip lands by itself, on the cut
+      syncOn: function () { return !!srv.sync; },
       // the moment this listener is hearing now, as a time on this device's clock (seconds)
       heardAt: heardAt,
       // the tuner: start the next stream quietly / swell it up / dip it under the static
@@ -1750,6 +1924,11 @@
     artistName: $("artist-name")
   };
   var state = "idle";
+  // The song this listener is hearing (its id: shown when it starts here, see show). A dislike
+  // or a like names it: the music here runs up to ~30 s behind the station (the buffer, see
+  // the engine's feed), so near a song's end the station may already be on the next one.
+  var heardSongId = null;
+  function heardParam() { return heardSongId != null ? "&id=" + encodeURIComponent(heardSongId) : ""; }
 
   function setStatus(text) { setText(ui.status, text); }
 
@@ -1777,6 +1956,14 @@
     else if (s === "offline") setStatus("Offline — music resumes when you reconnect");
     else if (s === "idle") setStatus("Ready to play");
     else if (s === "paused") setStatus("Paused by your phone — back when you return");
+  });
+  // (fed in: the connection broke but the music plays on from the buffer while it reconnects)
+  engine.on("resuming", function (d) {
+    log.add("warn", (d.how === "offline" ? "Phone went offline" : d.how === "server" ? "Stream closed by the server" : "Connection broke") + ", playing on from the buffer (" + d.ahead + " s in hand)");
+  });
+  engine.on("resumed", function (d) {
+    if (d.ok) log.add("ok", "Reconnected after " + (d.ms / 1000).toFixed(1) + " s without a break in the music");
+    else log.add("warn", "Connection was gone longer than the buffer, reconnecting");
   });
   engine.on("connecting", function (reason) {
     if (reason === "skip") setStatus("Skipping…");
@@ -2161,7 +2348,7 @@
       var host = order[i++];
       // signed in to the studio? send it along (only over HTTPS): some users' votes count double
       var auth = session && session.token && /^https:/i.test(host) ? { Authorization: "Bearer " + session.token } : null;
-      return postJSON(host + CONFIG.SKIP_PATH + "?d=" + encodeURIComponent(deviceId()), 4000, auth).catch(function (err) {
+      return postJSON(host + CONFIG.SKIP_PATH + "?d=" + encodeURIComponent(deviceId()) + heardParam(), 4000, auth).catch(function (err) {
         if (i < order.length && navigator.onLine) return tryNext();
         throw err;
       });
@@ -2187,7 +2374,7 @@
           if (landsAt) {
             skipping = 0; landedEarly = Date.now();
             engine.rush(engine.toDevice(landsAt), function () { skipFx.land(); });
-            [2500, 4500].forEach(function (ms) { setTimeout(function () { nowPlaying.poll(); }, ms); });
+            [0, 2500, 4500].forEach(function (ms) { setTimeout(function () { nowPlaying.poll(); }, ms); });
           } else {
             // (an older server: ask for the new song's exact start time straight away, and a few more times)
             skipping = Date.now();
@@ -3510,8 +3697,13 @@
     set("play", function () { engine.play(); });
     set("pause", function () { engine.stop(); });
     set("stop", function () { engine.stop(); });
+    // ⏭ dislikes the song, ⏮ likes it (the cover says which is which: a page can't put its own
+    // buttons or icons in the notification, only the standard ones)
     set("nexttrack", function () { voteSkip("headset"); });
-    set("previoustrack", null);
+    set("previoustrack", function () {
+      var b = $("save-btn");                         // (the like key: it says what it did)
+      if (b && !b.hidden && !b.disabled) b.click();
+    });
     set("seekbackward", null);
     set("seekforward", null);
     set("seekto", null);
@@ -3561,7 +3753,12 @@
           // ON AIR, like the light on the radio
           x.fillStyle = "#c2416b"; x.beginPath(); x.arc(60, 452, 10, 0, Math.PI * 2); x.fill();
           x.fillStyle = "#835d2a"; x.font = "800 22px Mulish, system-ui, sans-serif"; x.textBaseline = "middle";
-          x.fillText(show ? "ON AIR · LIVE SHOW" : "ON AIR · LISTENER-VOTED RADIO", 82, 453);
+          x.fillText(show ? "ON AIR · LIVE SHOW" : "ON AIR", 82, 453);
+          // which button is which (the notification draws them its own way: ⏮ and ⏭)
+          if (!show) {
+            keyChip(x, 184, "prev", false, "LIKE");
+            keyChip(x, 324, "next", true, "DISLIKE");
+          }
           // (iPhones show small artwork more reliably: a 128 px copy goes along with it)
           var sm = document.createElement("canvas"); sm.width = sm.height = 128;
           sm.getContext("2d").drawImage(cv, 0, 0, 128, 128);
@@ -3583,6 +3780,42 @@
       };
       img.src = "icons/flamingo-512.png";
     });
+    // a little brass-edged chip: the notification's button (⏮ or ⏭) and what it does here
+    // the thumb: a brass disc with a white hand on it, thumb up (or down: turned over)
+    function thumbBadge(c, cx, cy, r, down) {
+      c.fillStyle = "#835d2a"; c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.fill();
+      c.save();
+      c.translate(cx, cy); if (down) c.rotate(Math.PI);
+      var k = r * 1.25 / 24; c.scale(k, k); c.translate(-12, -12.4);
+      c.fillStyle = "#fff8ec";
+      c.beginPath();                                       // the cuff
+      c.moveTo(2.5, 10.5); c.lineTo(5.5, 10.5); c.lineTo(5.5, 21); c.lineTo(2.5, 21); c.closePath();
+      c.moveTo(7.5, 10.5);                                 // the hand, its thumb up
+      c.lineTo(11.4, 3.4); c.bezierCurveTo(12.3, 1.8, 15, 2.4, 14.8, 4.6);
+      c.lineTo(14.2, 8.8); c.lineTo(19.6, 8.8);
+      c.bezierCurveTo(21.2, 8.8, 22.3, 10.2, 21.9, 11.7);
+      c.lineTo(20.1, 19.4); c.bezierCurveTo(19.8, 20.4, 19, 21, 18, 21);
+      c.lineTo(7.5, 21); c.closePath();
+      c.fill();
+      c.strokeStyle = "#835d2a"; c.lineWidth = 0.9; c.lineCap = "round";   // (where the fingers meet)
+      c.beginPath(); c.moveTo(15.2, 12.5); c.lineTo(20.8, 12.5); c.moveTo(15.2, 16); c.lineTo(20, 16); c.stroke();
+      c.restore();
+    }
+    function keyChip(c, x0, which, down, word) {
+      var y0 = 430, w = which === "prev" ? 128 : 150, h = 46;
+      c.fillStyle = "rgba(131,93,42,0.12)"; rr(c, x0, y0, w, h, 23); c.fill();
+      c.strokeStyle = "rgba(131,93,42,0.55)"; c.lineWidth = 2; rr(c, x0 + 1, y0 + 1, w - 2, h - 2, 22); c.stroke();
+      c.fillStyle = "#835d2a";
+      var cx = x0 + 22, cy = y0 + h / 2;                 // ⏮ / ⏭, drawn: a bar and a triangle
+      c.beginPath();
+      if (which === "prev") { c.rect(cx - 9, cy - 8, 3, 16); c.moveTo(cx + 8, cy - 8); c.lineTo(cx - 5, cy); c.lineTo(cx + 8, cy + 8); }
+      else { c.rect(cx + 6, cy - 8, 3, 16); c.moveTo(cx - 8, cy - 8); c.lineTo(cx + 5, cy); c.lineTo(cx - 8, cy + 8); }
+      c.closePath(); c.fill();
+      thumbBadge(c, x0 + 54, cy, 15, down);
+      c.fillStyle = "#835d2a"; c.textBaseline = "middle";
+      c.font = "800 18px Mulish, system-ui, sans-serif";
+      c.fillText(word, x0 + 75, cy + 1);
+    }
     function rr(c, x0, y0, w, h, r) {
       c.beginPath(); c.moveTo(x0 + r, y0); c.arcTo(x0 + w, y0, x0 + w, y0 + h, r); c.arcTo(x0 + w, y0 + h, x0, y0 + h, r);
       c.arcTo(x0, y0 + h, x0, y0, r); c.arcTo(x0, y0, x0 + w, y0, r); c.closePath();
@@ -3649,7 +3882,7 @@
       busy = true;
       btn.classList.add("is-busy", "is-liked");
       btn.setAttribute("aria-pressed", "true");
-      postJSON(hosts.current() + CONFIG.SKIP_PATH + "?up=1&d=" + encodeURIComponent(deviceId()), 4000).then(function (data) {
+      postJSON(hosts.current() + CONFIG.SKIP_PATH + "?up=1&d=" + encodeURIComponent(deviceId()) + heardParam(), 4000).then(function (data) {
         setStatus(data.message || "Liked");
         if (data.liked) {
           likedId = t.id;
@@ -3671,7 +3904,7 @@
     function show(d) {
       if (d.id != null && d.id !== lastId) {
         if (lastId !== null) resetVote();
-        lastId = d.id;
+        lastId = d.id; heardSongId = d.id;
       }
       saveSong.update(d);
       var liveNow = d.live && d.live.host ? d.live.host : "";
@@ -3683,15 +3916,19 @@
         updateMeta(d.title, d.artist || "Raadio", !!d.show);
       }
     }
-    function poll() {
+    // (waiting: the reply comes when something changes, see watch; its round trip says nothing
+    // about the clocks, so it isn't used to set ours)
+    function poll(waiting) {
       var tSend = Date.now() / 1000, tRecv = 0;
-      fetch(hosts.current() + CONFIG.NOW_PLAYING_PATH + "?t=" + Date.now() + (engine.isOn() ? "&on=1" : ""), { cache: "no-store" })
+      return fetch(hosts.current() + CONFIG.NOW_PLAYING_PATH + "?t=" + Date.now() + (engine.isOn() ? "&on=1" : "") + (waiting ? "&v=" + npV + "&wait=1" : ""), { cache: "no-store" })
         .then(function (r) { tRecv = Date.now() / 1000; if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then(function (d) {
           failedOnce = false;
           if (!d) return;
+          if (typeof d.v === "number") npV = d.v;
           if (typeof d.delay === "number" && d.delay >= 0 && d.delay < 10) CONFIG.SERVER_DELAY_S = d.delay;
-          engine.server(d, tSend, tRecv);
+          engine.server(d, waiting ? undefined : tSend, tRecv);
+          if (d.sync) watch();
           if (d.recent) guideHistory.set(d.recent);
           if (typeof d.votes === "number") voteState.votes = d.votes;
           if (typeof d.needed === "number") voteState.needed = d.needed;
@@ -3711,7 +3948,7 @@
               landedEarly = 0;
               pendingId = d.id;
               clearTimeout(pendingTimer);
-              pendingTimer = setTimeout(function () { pendingId = null; show(d); }, Math.min(Math.max(0, wait), 20) * 1000);
+              pendingTimer = setTimeout(function () { pendingId = null; show(d); }, Math.min(Math.max(0, wait), 45) * 1000);
               return;
             }
             if (skipping) {                // our skip: run through the old song's (muted) tail and land on the new one
@@ -3725,13 +3962,14 @@
             if (wait > 0.2) {
               pendingId = d.id;
               clearTimeout(pendingTimer);
-              pendingTimer = setTimeout(function () { pendingId = null; show(d); }, Math.min(wait, 20) * 1000);
+              pendingTimer = setTimeout(function () { pendingId = null; show(d); }, Math.min(wait, 45) * 1000);   // (up to ~31 s behind: see feed)
               return;
             }
           }
           if (d.id === pendingId) return;  // still waiting for that one to be heard
           show(d);
         }).catch(function (err) {
+          if (waiting) throw err;                         // (watch tries again a little later)
           if (failedOnce) return;
           failedOnce = true;
           console.warn("now-playing failed:", err);
@@ -3770,6 +4008,20 @@
       if (!(ms > 0 && ms < 3 * 3600e3)) return;
       endTimer = setTimeout(function () { poll(); endTimer = setTimeout(poll, 2500); }, ms);
     }
+
+    // While playing with everyone in step (the server's SYNC): one request always waiting on the
+    // server, answered the moment something changes, so a skip's cut reaches this player
+    // well before everyone jumps (SKIP_IN, 1.5 s), and the title changes on the first note.
+    var npV = -1, watching = false;
+    function watch() {
+      if (watching || !engine.isOn()) return;
+      watching = true;
+      (function loop() {
+        if (!engine.isOn() || !engine.syncOn()) { watching = false; return; }
+        poll(true).then(function () { setTimeout(loop, 200); }, function () { setTimeout(loop, 3000); });
+      })();
+    }
+    engine.on("state", function (st) { if (st === "live") watch(); });
 
     nowPlaying.poll = poll;
     poll();                                              // show the title before Play is pressed

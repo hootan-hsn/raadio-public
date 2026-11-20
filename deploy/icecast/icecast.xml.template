@@ -10,7 +10,7 @@
     <limits>
         <clients>${ICECAST_MAX_LISTENERS}</clients>
         <sources>6</sources>
-        <queue-size>524288</queue-size>
+        <queue-size>1048576</queue-size>
         <client-timeout>30</client-timeout>
         <header-timeout>15</header-timeout>
         <source-timeout>30</source-timeout>
@@ -24,7 +24,7 @@
              only 1 s, a hiccup in the first minute cut the sound; once a player had stalled
              and refilled it ran smoothly, which is what this extra start buffer does up front.)
              The player measures the resulting delay itself, so the waveform and title stay
-             in sync. -->
+             in sync. (The Opus mounts below send far more: a buffer for dropped connections.) -->
         <burst-size>56000</burst-size>
     </limits>
 
@@ -49,14 +49,17 @@
 
     <mount type="normal">
         <mount-name>/radio.opus</mount-name>
-        <burst-size>56000</burst-size>   <!-- Opus 64k: Chrome starts at ~32 KB, +3 s -->
+        <!-- Opus 64k: ~30 s of audio. Played from its start, so a listener always has ~28 s
+             in hand: the player reconnects through a dropped connection (a tunnel, the metro)
+             and carries on from the very page where it broke off (web/script.js, feed). -->
+        <burst-size>256000</burst-size>
         <stream-name>Raadio (Opus)</stream-name>
         <public>0</public>
     </mount>
 
     <mount type="normal">
         <mount-name>/radio-lite.opus</mount-name>
-        <burst-size>44000</burst-size>   <!-- Opus 32k: Chrome starts at ~32 KB, +3 s -->
+        <burst-size>128000</burst-size>   <!-- Opus 32k: ~30 s of audio, as above -->
         <stream-name>Raadio (Opus, data saver)</stream-name>
         <public>0</public>
     </mount>

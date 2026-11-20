@@ -160,6 +160,18 @@ CHUNK = BYTES_PER_SEC // 50                 # 20 ms per write (in 100 ms steps t
                                             # audio jumped about, and players' timing with it)
 SILENCE = bytes(CHUNK)
 LEAD = 1.0                                  # seconds of audio kept queued ahead of real time
+# Every listener hears the same moment at the same time, with a buffer in hand (SYNC): the
+# station runs SYNC_LEAD seconds ahead of what's heard, so each player holds that much (a
+# tunnel, a lift, a weak signal pass without a break), and plays by the station's clock.
+# A skip can't wait for the buffer to run out: it's a cut (Broadcaster.cut), a moment
+# SKIP_IN seconds after the vote when every player jumps from what it's playing to the new
+# song, together. The station then sends ahead faster than real time until it's SYNC_LEAD
+# ahead again (a few seconds of download, nothing heard). Live from the studio it runs only
+# LIVE_LEAD ahead (the hosts and the chat would otherwise be half a minute apart).
+SYNC = env_bool("SYNC", True)
+SYNC_LEAD = float(env("SYNC_LEAD", "25"))
+LIVE_LEAD = 1.0
+SKIP_IN = 1.5
 
 TG_APP = Client(SESSION_NAME, api_id=API_ID, api_hash=API_HASH, workdir=str(DATA_DIR))
 
@@ -192,7 +204,8 @@ current_track_started = 0.0
 # When a skip lands: the first moment after the old song's fade (the next song), on this
 # server's clock, as it's due at the encoder. The vote that skipped gets it in its reply.
 skip_turn = {"fut": None, "at": 0.0}
-current_track_path = None
+current_track_path = None      # the song being written (SYNC: maybe the one after the one heard)
+current_heard_path = None      # ...and the one heard
 current_wave_key = None         # key for /api/wave/{key}: the player's waveform follows it
 VIBE = VibeCache()
 current_is_show = False        # a scheduled studio item is on air (can't be vote-skipped)
@@ -574,7 +587,7 @@ def stream_edge():
     due time: the broadcaster keeps ~LEAD queued in front of real time, and the encoder (and
     the Opus pages) hold a little back. A listener hears a moment `edge` seconds before it's
     due, plus whatever their player has buffered."""
-    lead = LEAD + CHUNK / BYTES_PER_SEC / 2      # (the queue tops up in CHUNK steps)
+    lead = (broadcaster.ahead() if SYNC and broadcaster else LEAD) + CHUNK / BYTES_PER_SEC / 2   # (it tops up in CHUNK steps)
     return {k: round(lead - d, 3) for k, d in OUT_DELAY.items()}
 
 
@@ -590,6 +603,10 @@ class Broadcaster:
         self.t0 = 0.0
         self.sent = 0
         self.last_write = 0.0          # for the watchdog
+        self.lead = SYNC_LEAD if SYNC else LEAD
+        self.cuts = []                 # this encoder's cuts, oldest first (see cut)
+        self.shifted = 0.0             # ...and what they took off its clock, together
+        self.gen = 0                   # a new encoder: a new stream, its own clock
 
     async def start(self):
         lite = OPUS_ENABLED and bool(OPUS_LITE_BITRATE)
@@ -601,6 +618,8 @@ class Broadcaster:
         )
         self.t0 = time.monotonic()
         self.sent = 0
+        self.cuts, self.shifted = [], 0.0
+        self.gen += 1
         print("Encoder started, streaming to Icecast"
               + (f" (/radio.mp3 {BITRATE} + /radio.opus {OPUS_BITRATE}"
                  + (f" + /radio-lite.opus {OPUS_LITE_BITRATE}" if lite else "") + ")"
@@ -621,8 +640,8 @@ class Broadcaster:
     async def write(self, data: bytes):
         await self._ensure()
         ahead = self.sent / BYTES_PER_SEC - (time.monotonic() - self.t0)
-        if ahead > LEAD:
-            await asyncio.sleep(ahead - LEAD)
+        if ahead > self.lead:
+            await asyncio.sleep(ahead - self.lead)
         elif ahead < -2.0:
             # The event loop stalled; carry on from now instead of bursting to catch up
             self.t0 = time.monotonic() - self.sent / BYTES_PER_SEC
@@ -635,8 +654,44 @@ class Broadcaster:
             print("Encoder pipe closed (Icecast restarted or rejected the source?)")
             await self.stop()
 
+    def pos(self) -> float:
+        """Where the next audio goes, in seconds of this encoder's stream (its sample count:
+        an Opus stream's granule positions, which players read as their currentTime)."""
+        return self.sent / BYTES_PER_SEC
+
+    def clock0(self):
+        """clock() as it was before any cut: what players count this stream's moments from
+        (each cut since then is sent along with it, and how much it took off)."""
+        c = self.clock()
+        return None if c is None else c + self.shifted
+
+    def due_of(self, s):
+        """When the moment s seconds into this stream is heard, on this server's clock."""
+        c = self.clock0()
+        if c is None:
+            return None
+        return c + s - sum(k["shift"] for k in self.cuts if k["to"] <= s)
+
+    def cut(self, at, to=None):
+        """At `at` (wall clock) every player jumps from what it's playing then to `to` (seconds
+        into the stream; default: the next audio written). What lay between is never heard;
+        the clock moves back by that much, so the station sends ahead again at once."""
+        c = self.clock()
+        if c is None:
+            return None
+        frm = round(at - c, 3)                   # (heard at `at`: no later cut can come before it)
+        to = round(self.pos() if to is None else to, 3)
+        shift = round(to - frm, 3)
+        if shift < 0.05:
+            return None
+        self.t0 -= shift
+        self.shifted += shift
+        k = {"from": frm, "to": to, "at": round(at, 3), "shift": shift}
+        self.cuts.append(k)
+        return k
+
     def ahead(self) -> float:
-        """Seconds of audio already handed to the encoder but not yet due (up to LEAD).
+        """Seconds of audio already handed to the encoder but not yet due (up to its lead).
         A track that starts now is really heard this much later."""
         if not self.sent:
             return 0.0
@@ -850,8 +905,9 @@ def clear_leftovers(older_than=0.0):
     elsewhere (data/studio) and are never touched here."""
     keep = {os.path.realpath(r["path"]) for r in recent_tracks.values()}
     keep |= {os.path.realpath(CACHE_DIR / f"{i}.m4a") for i in recent_tracks}
-    if current_track_path:
-        keep.add(os.path.realpath(current_track_path))
+    for p in (current_track_path, current_heard_path):
+        if p:
+            keep.add(os.path.realpath(p))
     keep |= {os.path.realpath(got[3]) for got in map(_ready, COMING) if got}   # waiting in line
     now, freed = time.time(), 0
     for folder in (DOWNLOAD_DIR, CACHE_DIR):
@@ -897,8 +953,8 @@ def keep_recent(msg_id, path, title, artist):
 
 
 def track_for_save(track_id):
-    if track_id == current_track_id and current_track_path and not current_is_show:
-        return {"path": current_track_path, "title": current_track_title,
+    if track_id == current_track_id and current_heard_path and not current_is_show:
+        return {"path": current_heard_path, "title": current_track_title,
                 "artist": current_track_artist, "started": current_track_started}
     return recent_tracks.get(track_id)
 
@@ -955,7 +1011,18 @@ async def save_track(track_id: int, request: Request):
 
 
 def track_is_playing():
+    if SYNC:                           # (what's heard: its writing may be over already)
+        return current_track_id is not None and current_track_title != "Unknown Track"
     return current_decoder is not None and current_decoder.returncode is None and current_track_id
+
+
+def skip_pending():
+    """A skip of the song on air is on its way (the song fading out, or everyone's cut to come)."""
+    return skip_requested or (SYNC and _skip_cut["id"] is not None and _skip_cut["id"] == current_track_id)
+
+
+_skip_cut = {"id": None}               # (SYNC) the song on air a vote has skipped, until it's gone
+skip_ctx = {}                          # (SYNC) when the skip being faded out cuts for everyone
 
 
 async def votes_needed():
@@ -992,8 +1059,10 @@ async def register_like(request: Request):
     """The thumbs-up (POST /skip?up=1: the same address as a skip vote, so Nginx and the
     relays need nothing new). It takes back one skip vote waiting on this song, so it takes
     one more listener to skip it, and makes the song come round a little more often."""
-    if not track_is_playing() or current_is_show or skip_requested:
+    if not track_is_playing() or current_is_show or skip_pending():
         return {"status": "error", "liked": False, "message": "Nothing to like right now."}
+    if heard_ended(request):
+        return {"status": "ignored", "liked": False, "message": "That song has just ended."}
     client_ip = get_client_ip(request)
     device = request.query_params.get("d", "")
     if not re.fullmatch(r"[a-z0-9]{8,32}", device):
@@ -1013,10 +1082,20 @@ async def register_like(request: Request):
         rescued = True
     await asyncio.to_thread(like_result, current_track_id, who)
     AUDIENCE.event("like", current_track_id, client_ip)
+    np_bump()
     # (no addresses in the log: a leaked log mustn't say who listens, from Iran above all)
     print("Thumbs-up" + (" (took back a skip vote)" if rescued else ""))
     return {"status": "success", "liked": True, "rescued": rescued,
             "message": "Saved from a skip!" if rescued else "Liked. It'll come round more often."}
+
+
+def heard_ended(request: Request) -> bool:
+    """The player says which song its listener is hearing (?id=). Listeners run up to ~30 s
+    behind the station (the player's buffer for dropped connections), so near the end of a
+    song the station may already be on the next one: a vote then is for a song that's over,
+    not for the one the listener hasn't heard yet. (Players from before ?id= send none.)"""
+    heard = request.query_params.get("id")
+    return bool(heard) and current_track_id is not None and heard != str(current_track_id)
 
 
 @app.post("/skip")
@@ -1025,12 +1104,14 @@ async def register_skip_vote(request: Request):
 
     if request.query_params.get("up") == "1":
         return await register_like(request)
-    if not track_is_playing() or skip_requested:
+    if not track_is_playing() or skip_pending():
         return {"status": "error", "skipped": False,
                 "message": "No track is playing right now."}
     if current_is_show:
         return {"status": "error", "skipped": False,
                 "message": "Studio shows can't be skipped."}
+    if heard_ended(request):
+        return {"status": "ignored", "skipped": False, "message": "That song has just ended."}
 
     now = time.time()
     for key, (ts, _w) in list(skip_votes.items()):
@@ -1066,9 +1147,27 @@ async def register_skip_vote(request: Request):
     print(f"Skip vote (x{weight}): {votes_in()}/{needed}")
 
     AUDIENCE.event("vote", current_track_id, client_ip)
+    np_bump()
     if votes_in() >= needed:
         print(f"Skipping track globally: {current_track_title}")
         AUDIENCE.event("skip", current_track_id, None)
+        if SYNC:
+            _skip_cut["id"] = current_track_id
+            _skipped.add(current_track_id)
+            nxt = heard_next()
+            writing = current_decoder is not None and current_decoder.returncode is None
+            if nxt is not None or not writing:
+                # what's heard has been written to its end already (the station is on the next
+                # item, or waiting for it): everyone jumps there, nothing to stop
+                who = list(skip_votes)
+                skip_votes.clear()
+                at = time.time() + SKIP_IN
+                station_cut(at, nxt["s"] if nxt is not None else None)
+                if isinstance(current_track_id, int):
+                    await asyncio.to_thread(record_result, current_track_id, True, 1.0, who)
+                return {"status": "success", "skipped": True, "lands_at": at,
+                        "message": ("Your dislike counts double. Skipping!" if weight > 1 else "Enough dislikes. Skipping!")}
+            skip_ctx["at"] = time.time() + SKIP_IN   # (play_file cuts there, see SYNC)
         skip_requested = True          # the play loop fades it out and moves on
         skip_who[:] = list(skip_votes)  # (each counted once a day against the song)
         skip_votes.clear()
@@ -1089,9 +1188,21 @@ async def register_skip_vote(request: Request):
 @app.get("/now-playing")
 async def now_playing(request: Request):
     """What's on air. The web player uses `id` to notice track changes; it adds ?on=1
-    while its audio is playing, which is how the studio counts listeners per country."""
+    while its audio is playing, which is how the studio counts listeners per country.
+    ?v=<the reply's v>&wait=1: the answer waits (up to 20 s) until something in it changes, so
+    a cut reaches every player in time to jump with the rest (SYNC)."""
     AUDIENCE.seen(get_client_ip(request), request.query_params.get("on") == "1")
+    if request.query_params.get("wait") == "1" and request.query_params.get("v") == str(_np["v"]):
+        if _np["ev"] is None:
+            _np["ev"] = asyncio.Event()
+        try:
+            await asyncio.wait_for(_np["ev"].wait(), 20)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
     nxt = next_up()
+    later = heard_next() if SYNC else None
+    if later is not None and not later["show"] and later["title"]:
+        nxt = {"id": later["id"], "title": later["title"], "artist": later["artist"]}
     return {
         "id": current_track_id,
         "title": current_track_title,
@@ -1111,7 +1222,15 @@ async def now_playing(request: Request):
         # time), and when the encoder's first sample was due: with these a player works out
         # exactly which moment it's hearing (the title, the waveform, where a skip lands).
         "edge": stream_edge(),
-        "clock": broadcaster.clock() if broadcaster else None,
+        "clock": broadcaster.clock0() if broadcaster else None,
+        # SYNC: everyone plays the moment due now, `lead` s behind the newest audio; and the
+        # cuts (stream seconds `from` -> `to` at `at`; `shift` taken off the clock each),
+        # with what older ones took off together (`before`)
+        "sync": ({"lead": broadcaster.lead,
+                  "cuts": [k for k in broadcaster.cuts if k["at"] > time.time() - 600],
+                  "before": round(sum(k["shift"] for k in broadcaster.cuts if k["at"] <= time.time() - 600), 3)}
+                 if SYNC and broadcaster else None),
+        "v": _np["v"],
         "delay": max(0.0, -stream_edge()["mp3"]),   # (the same for players from before "edge")
         "sky": NOTES.sky_now(),        # a flamingo skywriting a listener's note, for everyone
         "notes_open": NOTES.has_room(),  # room for another note: flamingos come round to be caught
@@ -1699,6 +1818,9 @@ async def play_file(bc: Broadcaster, path: str, interruptible=True, blend=False)
         while True:
             cut_in = interruptible and (STUDIO.has_due() or LIVE.on_air() is not None)
             if skip_requested or cut_in:
+                if skip_requested and not cut_in and SYNC and "at" in skip_ctx:
+                    # (everyone jumps here, to this song fading out and what comes after it)
+                    station_cut(skip_ctx.pop("at"), bc.pos())
                 # a little more, faded out, then stop this track (what's in hand first)
                 want = int(SKIP_FADE_SECONDS * BYTES_PER_SEC) // FRAME * FRAME
                 tail = bytes(buf[:want]) + rest
@@ -1768,13 +1890,102 @@ def next_up():
     return {"id": got[0], "title": got[1], "artist": got[2]} if got else None
 
 
-def set_now_playing(track_id, title, artist, show, wave_key=None, lead=0.0):
+# What's heard and what's being written (SYNC): the station writes up to SYNC_LEAD ahead, so the
+# item it's writing may be the one after the one everybody hears. current_track_* (the title,
+# votes, likes, saves) always follow what's heard: each item waits in _timeline, with where
+# it starts in the stream, until that moment is heard (heard_tick).
+_timeline = []                 # items written but not heard yet, in stream order
+_writing = {"id": None}        # the item being written now
+_skipped = set()               # heard items a vote skipped (not counted as heard to the end)
+_np = {"v": 0, "ev": None}     # now-playing's version: a reply waiting on it (?v=) goes when it changes
+
+
+def np_bump():
+    """Something players show changed: wake the now-playing replies waiting for it."""
+    _np["v"] += 1
+    ev, _np["ev"] = _np["ev"], None
+    if ev is not None:
+        ev.set()
+
+
+def _item_due(it):
+    bc = broadcaster
+    if bc is not None and it.get("gen") == bc.gen:
+        d = bc.due_of(it["s"])
+        if d is not None:
+            return d
+    return it["due0"]
+
+
+def set_now_playing(track_id, title, artist, show, wave_key=None, lead=0.0, path=None):
     """lead: audio of the previous item still queued ahead of real time (Broadcaster.ahead()),
     so started_at is when this item's first sound is actually due, not when it was chosen.
     Players use it to switch the title, the waveform and the skip's tuning sound exactly
-    when the new song reaches them."""
+    when the new song reaches them. (SYNC: it becomes what's on air when it's heard.)"""
+    it = {"id": track_id, "title": title, "artist": artist, "show": show, "wave": wave_key,
+          "path": path, "due0": time.time() + max(0.0, lead)}
+    _writing["id"] = track_id
+    bc = broadcaster
+    if not SYNC or bc is None:
+        _apply_item(it, it["due0"])
+        return
+    it["s"], it["gen"] = bc.pos(), bc.gen
+    _timeline.append(it)
+    heard_tick()
+
+
+def station_cut(at, to=None):
+    """A cut (Broadcaster.cut), and whatever was written in the part it jumps over goes unheard."""
+    bc = broadcaster
+    k = bc.cut(at, to) if bc is not None else None
+    if k:
+        for it in _timeline:
+            if it.get("gen") == bc.gen and k["from"] <= it["s"] < k["to"]:
+                it["cut"] = True
+        print(f"Cut: everyone jumps {k['shift']:.1f} s ahead in {at - time.time():.1f} s")
+        np_bump()
+    return k
+
+
+def heard_tick():
+    """Puts on air the items whose first moment is being heard now (SYNC)."""
+    now = time.time()
+    while _timeline:
+        it = _timeline[0]
+        due = _item_due(it)
+        if due > now:
+            break
+        _timeline.pop(0)
+        if not it.get("cut"):
+            _apply_item(it, due)
+
+
+async def heard_loop():
+    while True:
+        try:
+            heard_tick()
+        except Exception:
+            print("heard_tick failed:\n" + traceback.format_exc())
+        await asyncio.sleep(0.1)
+
+
+def heard_next():
+    """The next item already written, heard after the one on air (SYNC), or None."""
+    return next((it for it in _timeline if not it.get("cut")), None)
+
+
+def _apply_item(it, due):
     global current_track_id, current_track_title, current_track_artist
-    global current_track_started, current_is_show, current_wave_key
+    global current_track_started, current_is_show, current_wave_key, current_heard_path
+    track_id, title, artist, show, wave_key = it["id"], it["title"], it["artist"], it["show"], it["wave"]
+    prev = current_track_id
+    # (SYNC: a song heard to its end counts as heard here, not when it was written: a vote may
+    # still skip it after that)
+    if SYNC and prev is not None and prev != track_id and not current_is_show:
+        if prev in _skipped:
+            _skipped.discard(prev)
+        elif isinstance(prev, int):
+            asyncio.ensure_future(_record_finished(prev))
     # the one ending goes on the "recently played" list (songs and shows, not the gaps)
     if current_track_id is not None and current_track_id != track_id and current_track_title \
             and current_track_title != "Unknown Track":
@@ -1786,9 +1997,11 @@ def set_now_playing(track_id, title, artist, show, wave_key=None, lead=0.0):
     current_track_id = track_id
     current_track_title = title
     current_track_artist = artist
-    current_track_started = time.time() + max(0.0, lead)
+    current_track_started = due
+    current_heard_path = it["path"]
     current_is_show = show
     skip_votes.clear()
+    np_bump()
 
 
 async def play_show(bc: Broadcaster, airing):
@@ -1950,6 +2163,7 @@ async def live_radio_loop():
 
     async with TG_APP:
         await bc.start()
+        asyncio.ensure_future(heard_loop())
         top_up(queue)
         while True:
             try:
@@ -1983,8 +2197,16 @@ async def radio_step(bc: Broadcaster, queue: TrackQueue, st):
     # 0. A host live from the studio comes before everything (a scheduled item that falls
     #    due meanwhile plays when they're done)
     if LIVE.on_air():
+        if SYNC and bc.lead > LIVE_LEAD:
+            # (the hosts and their chat must hear the show as it goes out: everyone jumps to it)
+            bc.lead = LIVE_LEAD
+            station_cut(time.time() + 1.0)
         await flush_blend(bc)
-        await play_live(bc)
+        try:
+            await play_live(bc)
+        finally:
+            if SYNC:
+                bc.lead = SYNC_LEAD    # (and runs ahead again after it)
         return
 
     # 1. Scheduled studio items always go first
@@ -2033,7 +2255,7 @@ async def radio_step(bc: Broadcaster, queue: TrackQueue, st):
             pass
         return
 
-    set_now_playing(msg_id, title, artist, show=False, wave_key=str(msg_id), lead=bc.ahead())
+    set_now_playing(msg_id, title, artist, show=False, wave_key=str(msg_id), lead=bc.ahead(), path=path)
     current_track_path = path
     print(f"Streaming: {artist + ' - ' if artist else ''}{title}")
     await asyncio.to_thread(log_track_start, msg_id, title, queue.reasons.get(msg_id, "rotation"))
@@ -2049,10 +2271,16 @@ async def radio_step(bc: Broadcaster, queue: TrackQueue, st):
             await asyncio.to_thread(record_result, msg_id, True, 1.0, who)
         elif outcome == "finished":
             # (counted on the side, so the next song starts without waiting on the database)
-            asyncio.create_task(_record_finished(msg_id))
+            # (SYNC: when it's been heard to its end, see _apply_item: a vote may skip it yet)
+            if not SYNC:
+                asyncio.create_task(_record_finished(msg_id))
         elif outcome == "interrupted":
+            if SYNC:
+                _skipped.add(msg_id)   # (cut short, so not counted as heard)
             print(f"Faded out track {msg_id} for " + ("a host going live" if LIVE.on_air() else "a scheduled studio item"))
         else:
+            if SYNC:
+                _skipped.add(msg_id)
             print(f"Decoder failed on track {msg_id}; not counted")
     finally:
         keep_recent(msg_id, path, title, artist)

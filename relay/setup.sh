@@ -89,7 +89,7 @@ EOF
     <limits>
         <clients>2000</clients>
         <sources>6</sources>
-        <queue-size>524288</queue-size>
+        <queue-size>1048576</queue-size>
         <client-timeout>30</client-timeout>
         <header-timeout>15</header-timeout>
         <source-timeout>20</source-timeout>
@@ -109,8 +109,9 @@ EOF
 EOF
   # what a new listener gets at once: just over what browsers wait for before playing
   # (~32 KB of Opus, ~128 KB of MP3), so the sound starts as soon as they press play
-  relay_block /radio.opus 56000      # start threshold + 3 s of audio (see deploy/icecast)
-  relay_block /radio-lite.opus 44000
+  relay_block /radio.opus 256000     # Opus: ~30 s, the buffer through a dropped connection (see deploy/icecast)
+  relay_block /radio-lite.opus 128000
+                                     # MP3: start threshold + 3 s of audio
   relay_block /radio.mp3 176000
   relay_block /radio-lite.mp3 152000
   cat <<EOF
