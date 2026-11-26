@@ -28,8 +28,9 @@
     STREAM_MP3_LITE: "/radio-lite.mp3",
     SKIP_PATH: "/skip",
     // a skip is heard (the new song) never sooner than this after the press, screen on or
-    // off, in every browser: later only when the stream can't be there safely yet
-    SKIP_LANDS_MS: 5000,
+    // off, in every browser: later only when the stream can't be there safely yet (the
+    // station cuts for everyone SKIP_IN, 1.5 s, after the vote, so 2 s is always in hand)
+    SKIP_LANDS_MS: 2000,
     // The controller keeps one connection open through track changes, so the player
     // must not reconnect after a skip. Set to false only with the old per-track controller.
     CONTINUOUS_STREAM: true,
@@ -465,7 +466,30 @@
     // The server's /now-playing gives: `edge`, how far each stream's newest audio runs ahead
     // of its due time (the controller keeps ~1 s queued in front of real time), and `clock`,
     // when the encoder's first sample was due. started_at and the waveform are due times.
-    var srv = { edge: null, clock: null, off: 0, rtt: 1e9, at: 0, sync: null };
+    var srv = { edge: null, clock: null, off: 0, rtt: 1e9, at: 0, sync: null, seen: [] };
+    // ---- The station's clock against this device's (srv.off) ----
+    // Each /now-playing reply says what time it is at the station. It was said somewhere between
+    // the asking and the reply arriving, so it's right to within half the round trip: the faster
+    // the reply, the closer it pins the two clocks. What counts is the best of the last 10
+    // minutes' replies, each a little less trusted the older it is (two clocks can run a hair
+    // apart: 50 ppm allowed, generous). Only replies from then on count once a clock is set: this
+    // device's (its time moved unlike the page's steady clock: set, or it slept), or the
+    // server's (a reply that can't be squared with the best one).
+    // (It used to take any reply within 30 ms of the fastest, and every minute whichever came:
+    // the clock moved by tens of ms every few replies, and every speaker with it. Chrome hid
+    // that with its 0.2% nudge; Firefox, which can only jump, hiccupped.)
+    function clockSample(off, rtt, at) {
+      var s = srv.seen, b = null, i, wall = Date.now() / 1000, mono = performance.now() / 1000;
+      if (s.length && Math.abs(wall - srv.wall - (mono - srv.mono)) > 0.1) s.length = 0;   // (this device's clock was set)
+      srv.wall = wall; srv.mono = mono;
+      function loose(x) { return x.rtt / 2 + 5e-5 * (at - x.at); }
+      for (i = 0; i < s.length; i++) if (!b || loose(s[i]) < loose(b)) b = s[i];
+      if (b && Math.abs(off - b.off) > rtt / 2 + loose(b) + 0.025) s.length = 0;   // (a clock was set)
+      s.push({ off: off, rtt: rtt, at: at });
+      while (at - s[0].at > 600 || s.length > 240) s.shift();
+      for (i = 0, b = null; i < s.length; i++) if (!b || loose(s[i]) < loose(b)) b = s[i];
+      srv.off = b.off; srv.rtt = b.rtt; srv.at = at;
+    }
     function edgeOf(el) {
       var e = srv.edge && (el && el._ogg ? srv.edge.opus : srv.edge.mp3);
       return typeof e === "number" ? e : -CONFIG.SERVER_DELAY_S;     // (older server: its `delay`)
@@ -526,19 +550,59 @@
     }
     var synced = false, nudging = false;
     function syncing() { return !!srv.sync && srv.clock != null && streamPos(cur) != null; }
+    // ---- Firefox (Gecko) ----
+    // Its playhead can't be read or steered as Chrome's and Safari's can, and this sync made
+    // Firefox wobble (a jump every second or so, 0.1-0.4 s back and forth) and after ~20 s go
+    // silent, the time still moving. Three things are different there (measured in Zen, Firefox
+    // 159, on a Mac):
+    // - currentTime moves in 40 ms steps, so a reading can be up to 80 ms old. Taken as the
+    //   playhead, that's "a few hundredths off" all the time: the nudge switched speed up to 20
+    //   times a second, and now and then a reading set off a jump.
+    // - a change of speed moves the playhead ~30 ms at once, so a nudge there is a skip, not a
+    //   gentle correction.
+    // - after a jump the playhead stands still: ~50 ms, but after a run of jumps and speed
+    //   changes a second or more. Taken as being late, that set off the next jump half a second
+    //   later, and the next: the playhead never got going again (the silence), moved on only by
+    //   the jumps.
+    // So in Firefox the playhead is where the freshest of the last 1.5 s of readings puts it (a
+    // reading is only ever behind it, never ahead; 1.5 s, so a background tab's slower timer
+    // still gets a few), the speed is never changed, and after a jump nothing is judged until
+    // the playhead has moved on from it. (Against the station's clock it held within 15 ms for
+    // minutes with no correction at all, so jumps alone keep it in step.)
+    var GECKO = typeof HTMLMediaElement !== "undefined" && typeof HTMLMediaElement.prototype.mozCaptureStream === "function";
+    var gk = null;                   // { el, sought, sp, w (when sp last moved), moved, at: [[w, sp - w]] }
+    function geckoPos(el, sp, now) {
+      var w = now / 1000, o = sp - w, best = -1e9, i;
+      if (!gk || gk.el !== el || gk.sought !== el._sought) gk = { el: el, sought: el._sought, sp: sp, w: w, moved: !el._sought, at: [] };
+      if (sp !== gk.sp) { gk.moved = true; gk.sp = sp; gk.w = w; }
+      if (!gk.moved) return now - el._sought > 3000 ? { sp: sp, sure: false } : null;   // (a jump still landing)
+      if (w - gk.w > 0.15) { gk.at = []; return { sp: sp, sure: false }; }              // (standing still)
+      while (gk.at.length && w - gk.at[0][0] > 1.5) gk.at.shift();
+      for (i = 0; i < gk.at.length; i++) best = Math.max(best, gk.at[i][1]);
+      if (o < best - 0.1) { gk.at = []; best = -1e9; }     // (more than a step behind the rest: it lost time unseen, start again)
+      gk.at.push([w, o]);
+      best = Math.max(best, o);
+      return { sp: w + best, sure: w - gk.at[0][0] >= 0.25 };
+    }
     setInterval(function () {
       if (!srv.sync || srv.clock == null || !wanted || connecting || held || fadeTimer || weak.op) return;
       var el = cur;
       if (!audible(el)) return;
       var sp = streamPos(el);
       if (sp == null) { synced = false; return; }
-      var t = syncTarget(), err = sp - t, now = performance.now();
-      if (el._sought && now - el._sought < 400) return;      // (a jump is still landing)
+      var t = syncTarget(), now = performance.now(), g = null;
+      if (GECKO && !(g = geckoPos(el, sp, now))) return;
+      if (g) sp = g.sp;
+      var err = sp - t;
+      // (a jump is still landing. Firefox: until its playhead is read well, unless it's far off
+      // with no jump of its own just before, as when the stream has just started)
+      if (g ? !g.sure && ((el._sought && now - el._sought < 3000) || Math.abs(err) < 0.5) : el._sought && now - el._sought < 400) return;
       // A jump lands a little late (the player has to start again from there), and by how much
-      // differs: each one learns from the last, so the next lands on time.
+      // differs: each one learns from the last, so the next lands on time. (Firefox: only from
+      // an ordinary landing, not one where the playhead stood still for long.)
       if (el._sought && !el._learnt) {
         el._learnt = true;
-        if (Math.abs(err) < 0.5) el._lead = clamp((el._lead || 0) - err, -0.1, 0.4);
+        if (Math.abs(err) < (g ? 0.15 : 0.5)) el._lead = clamp((el._lead || 0) - err, -0.1, 0.4);
       }
       if (Math.abs(err) > 0.06) {
         // off by more than a hair (just started, a cut, back from a stall): jump there, if it's
@@ -555,6 +619,7 @@
         return;
       }
       synced = true;
+      if (g) return;                                         // (Firefox never changes speed: see geckoPos)
       // a few hundredths off (the devices' sound clocks run a hair apart): 0.2% faster or
       // slower until it's back (a pitch change of 3 cents, too small to hear: a semitone is 100)
       if (!nudging && Math.abs(err) > 0.012) nudging = true;
@@ -1476,15 +1541,14 @@
       rush: rush,
       // seconds that must be buffered here for the music to flow without stalling
       safeLag: function () { return safeLag(cur); },
-      // what the server said about its streams (see srv), and its clock against ours: the
-      // reply that came back fastest says it best (half its round trip is the most it's off)
+      // what the server said about its streams (see srv), and its clock against ours (see
+      // clockSample)
       server: function (d, tSend, tRecv) {
         if (d.edge && typeof d.edge.mp3 === "number" && typeof d.edge.opus === "number") srv.edge = d.edge;
         srv.clock = typeof d.clock === "number" ? d.clock : null;
         srv.sync = d.sync && typeof d.sync.lead === "number" && Array.isArray(d.sync.cuts) ? d.sync : null;   // (with the clock: they go together)
         if (typeof d.now !== "number" || !(tRecv >= tSend)) return;
-        var rtt = tRecv - tSend, nowS = Date.now() / 1000;
-        if (rtt <= srv.rtt + 0.03 || nowS - srv.at > 60) { srv.rtt = rtt; srv.at = nowS; srv.off = (tSend + tRecv) / 2 - d.now; }
+        clockSample((tSend + tRecv) / 2 - d.now, tRecv - tSend, tRecv);
       },
       toDevice: function (t) { return t + srv.off; },
       dbg: function () { var el = cur; return { sp: streamPos(el), target: srv.sync && srv.clock != null ? syncTarget() : null, synced: synced, lag: lag(el), safe: safeLag(el), onClock: onClock(el), ct0: el._ct0, ct: el.currentTime, edge0: el._edge0, burst: el._burst, srv: srv, delay: CONFIG.SERVER_DELAY_S, src: el.src, rate: el.playbackRate}; },
@@ -4024,7 +4088,11 @@
     engine.on("state", function (st) { if (st === "live") watch(); });
 
     nowPlaying.poll = poll;
-    poll();                                              // show the title before Play is pressed
+    // Show the title before Play is pressed. Then ask once more as soon as the reply is in, over the
+    // connection that's open by then: the first reply's round trip includes opening it, so it pins
+    // the station's clock only loosely (see clockSample). Play pressed straight away lined up to
+    // that, and moved again when a quicker reply came in a few seconds later.
+    poll().then(function () { poll(); });
     // Keep polling while playing, even with the screen off, so the lock screen stays current.
     // While playing, a little more often than this speaker runs behind the server (when a
     // song has no map to say when it ends, that's what keeps its title on time).
